@@ -108,6 +108,11 @@ class ModelConfigManager:
         model_display_name = normal_info.get("model_display", "")
         model_display = f"{provider_display}/{model_display_name}" if provider_display else model_display_name
 
+        # Append [session] indicator if session-model overlay is active
+        session_model_mgr = getattr(self._repl, "session_model_manager", None)
+        if session_model_mgr and session_model_mgr.is_active:
+            model_display += " [session]"
+
         if hasattr(self._app, "update_primary_model"):
             self._app.update_primary_model(model_display)
         if hasattr(self._app, "update_model_slots"):

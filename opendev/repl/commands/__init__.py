@@ -14,6 +14,7 @@ from opendev.repl.commands.tool_commands import ToolCommands
 from opendev.repl.commands.agents_commands import AgentsCommands
 from opendev.repl.commands.skills_commands import SkillsCommands
 from opendev.repl.commands.plugins_commands import PluginsCommands
+from opendev.repl.commands.session_model_commands import SessionModelCommands
 
 __all__ = [
     "CommandHandler",
@@ -27,4 +28,5 @@ __all__ = [
     "AgentsCommands",
     "SkillsCommands",
     "PluginsCommands",
+    "SessionModelCommands",
 ]

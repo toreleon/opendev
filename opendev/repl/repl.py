@@ -55,6 +55,7 @@ from opendev.repl.commands import (
     AgentsCommands,
     SkillsCommands,
     PluginsCommands,
+    SessionModelCommands,
 )
 
 # UI components
@@ -151,10 +152,13 @@ class REPL:
 
     def _init_managers(self):
         """Initialize operation managers."""
+        from opendev.core.runtime.session_model import SessionModelManager
+
         self.mode_manager = ModeManager()
         self.approval_manager = ApprovalManager(self.console)
         self.error_handler = ErrorHandler(self.console)
         self.undo_manager = UndoManager(self.config.max_undo_history)
+        self.session_model_manager = SessionModelManager(self.config)
 
     def _init_runtime_service(self):
         """Initialize runtime service with tool registry and agents."""
@@ -251,6 +255,7 @@ class REPL:
             self.console,
             self.session_manager,
             self.config_manager,
+            session_model_manager=self.session_model_manager,
         )
 
         self.mode_commands = ModeCommands(
@@ -263,6 +268,7 @@ class REPL:
             self.config_manager,
             chat_app=None,  # Will be set by ReplChat
         )
+        self.config_commands._session_model_manager = self.session_model_manager
 
         self.mcp_commands = MCPCommands(
             self.console,
@@ -300,6 +306,15 @@ class REPL:
             self.console,
             self.config_manager,
             is_tui=self.is_tui,
+        )
+
+        self.session_model_commands = SessionModelCommands(
+            self.console,
+            self.config_manager,
+            self.session_manager,
+            self.session_model_manager,
+            rebuild_agents_callback=self.rebuild_agents,
+            chat_app=None,  # Will be set by TUI
         )
 
     def _init_query_processor(self):
@@ -629,6 +644,8 @@ class REPL:
             self.skills_commands.handle(args)
         elif cmd == "/plugins":
             self.plugins_commands.handle(args)
+        elif cmd == "/session-models":
+            self.session_model_commands.handle(args)
         elif cmd == "/compact":
             self.session_commands.compact()
         elif cmd == "/sound":

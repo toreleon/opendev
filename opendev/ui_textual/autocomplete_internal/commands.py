@@ -61,7 +61,8 @@ BUILTIN_COMMANDS.register(SlashCommand("help", "show available commands and help
 BUILTIN_COMMANDS.register(SlashCommand("exit", "exit OpenDev"))
 BUILTIN_COMMANDS.register(SlashCommand("quit", "exit OpenDev (alias for /exit)"))
 BUILTIN_COMMANDS.register(SlashCommand("clear", "clear current session and start fresh"))
-BUILTIN_COMMANDS.register(SlashCommand("models", "interactive model/provider selector"))
+BUILTIN_COMMANDS.register(SlashCommand("models", "interactive model/provider selector (global)"))
+BUILTIN_COMMANDS.register(SlashCommand("session-models", "set model for this session only"))
 
 # Execution commands
 BUILTIN_COMMANDS.register(SlashCommand("mode", "switch between NORMAL and PLAN mode"))

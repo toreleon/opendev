@@ -126,9 +126,29 @@ class WebState:
         ]
 
     def resume_session(self, session_id: str) -> bool:
-        """Resume a specific session."""
+        """Resume a specific session, applying session-model overlay if present."""
         try:
             self.session_manager.load_session(session_id)
+            session = self.session_manager.get_current_session()
+            if session:
+                overlay = session.metadata.get("session_model")
+                if overlay:
+                    from opendev.core.runtime.session_model import (
+                        validate_session_model,
+                        clear_session_model,
+                        SessionModelManager,
+                    )
+
+                    config = self.config_manager.get_config()
+                    valid_overlay, warnings = validate_session_model(overlay)
+                    if valid_overlay:
+                        mgr = SessionModelManager(config)
+                        mgr.apply(valid_overlay)
+                        # Store manager for later cleanup
+                        self._session_model_manager = mgr
+                    else:
+                        clear_session_model(session)
+                        self.session_manager.save_session()
             return True
         except Exception:
             return False

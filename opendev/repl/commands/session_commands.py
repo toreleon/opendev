@@ -19,6 +19,7 @@ class SessionCommands(CommandHandler):
         console: Console,
         session_manager: "SessionManager",
         config_manager: "ConfigManager",
+        session_model_manager=None,
     ):
         """Initialize session commands handler.
 
@@ -26,10 +27,12 @@ class SessionCommands(CommandHandler):
             console: Rich console for output
             session_manager: Session manager instance
             config_manager: Configuration manager instance
+            session_model_manager: Optional session model manager for overlay cleanup
         """
         super().__init__(console)
         self.session_manager = session_manager
         self.config_manager = config_manager
+        self.session_model_manager = session_model_manager
 
     def handle(self, args: str) -> CommandResult:
         """Handle session command (not used, individual methods called directly)."""
@@ -85,6 +88,11 @@ class SessionCommands(CommandHandler):
         """
         if self.session_manager.current_session:
             self.session_manager.save_session()
+
+            # Restore global config if session-model overlay was active
+            if self.session_model_manager and self.session_model_manager.is_active:
+                self.session_model_manager.restore()
+
             self.session_manager.create_session(
                 working_directory=str(self.config_manager.working_dir)
             )

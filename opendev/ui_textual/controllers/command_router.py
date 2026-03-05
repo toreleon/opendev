@@ -50,6 +50,21 @@ class CommandRouter:
             await self.app._start_model_picker()
             return True
 
+        if cmd == "/session-models":
+            args = " ".join(parts[1:]) if len(parts) > 1 else ""
+            subcmd = args.strip().lower()
+            if subcmd == "clear":
+                # Clear handled via REPL fallthrough
+                return False
+            # Default: open session-model picker (like /models)
+            runner = getattr(self.app, "runner", None)
+            repl = getattr(runner, "repl", None) if runner else None
+            sm_cmds = getattr(repl, "session_model_commands", None) if repl else None
+            if sm_cmds:
+                sm_cmds.chat_app = self.app
+                await sm_cmds.show_model_selector_async()
+            return True
+
         if cmd == "/agents":
             args = " ".join(parts[1:]) if len(parts) > 1 else ""
             if args.lower().startswith("create"):
@@ -113,7 +128,8 @@ class CommandRouter:
         conversation.add_system_message("  /sound - Play test notification sound")
         conversation.add_system_message("  /demo - Show demo messages")
         conversation.add_system_message("  /scroll - Generate many messages (test scrolling)")
-        conversation.add_system_message("  /models - Configure model slots")
+        conversation.add_system_message("  /models - Configure model slots (global)")
+        conversation.add_system_message("  /session-models - Set model for this session only")
         conversation.add_system_message("  /agents create - Create new agent with wizard")
         conversation.add_system_message("  /skills - Create and manage custom skills")
         conversation.add_system_message("  /plugins - Manage plugins and marketplaces")

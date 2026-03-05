@@ -245,9 +245,20 @@ class ConfigCommands(CommandHandler):
             config.model_compact_provider = provider_id
             config.model_compact = model_info.id
 
-        # Save configuration
+        # Save configuration — protect against session-model overlay leaking
         try:
+            session_model_mgr = getattr(self, "_session_model_manager", None)
+            overlay_was_active = session_model_mgr and session_model_mgr.is_active
+            saved_overlay = None
+
+            if overlay_was_active:
+                saved_overlay = session_model_mgr.get_overlay()
+                session_model_mgr.restore()
+
             self.config_manager.save_config(config, global_config=True)
+
+            if overlay_was_active and saved_overlay:
+                session_model_mgr.apply(saved_overlay)
 
             # Refresh the UI (footer will show new model)
             if self.chat_app:
@@ -256,9 +267,13 @@ class ConfigCommands(CommandHandler):
                     refresher()
 
             mode_name = mode_names.get(mode, mode)
+            msg = f"Switched {mode_name} model to {model_info.name}"
+            if overlay_was_active:
+                msg += " (global). Session model still active — use /session-models clear to use global."
+
             return CommandResult(
                 success=True,
-                message=f"Switched {mode_name} model to {model_info.name}",
+                message=msg,
                 data={"model": model_info, "provider": provider_id, "mode": mode}
             )
 

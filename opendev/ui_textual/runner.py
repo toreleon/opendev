@@ -222,6 +222,27 @@ class TextualRunner:
             if self._dangerously_skip_permissions:
                 self.repl.approval_manager.set_autonomy_level("Auto")
 
+            # Apply session-model overlay if resuming a session with one
+            if session_loaded:
+                session = self.session_manager.get_current_session()
+                if session:
+                    session_model_overlay = session.metadata.get("session_model")
+                    if session_model_overlay:
+                        from opendev.core.runtime.session_model import (
+                            validate_session_model,
+                            clear_session_model,
+                        )
+
+                        valid_overlay, warnings = validate_session_model(session_model_overlay)
+                        for w in warnings:
+                            logger.warning("Session model: %s", w)
+                        if valid_overlay:
+                            self.repl.session_model_manager.apply(valid_overlay)
+                            self.repl.rebuild_agents()
+                        else:
+                            clear_session_model(session)
+                            self.session_manager.save_session()
+
             # Initialize plan file path for plan mode
             session = self.session_manager.get_current_session()
             if session:
