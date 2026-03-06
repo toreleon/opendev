@@ -31,6 +31,7 @@ export function NewSessionModal({ isOpen, onClose }: NewSessionModalProps) {
   const [isLoadingDirs, setIsLoadingDirs] = useState(false);
   const [browseError, setBrowseError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const loadSession = useChatStore(state => state.loadSession);
   const bumpSessionList = useChatStore(state => state.bumpSessionList);
 
@@ -76,6 +77,7 @@ export function NewSessionModal({ isOpen, onClose }: NewSessionModalProps) {
   const handleSelect = async () => {
     if (!currentPath) return;
     setIsCreating(true);
+    setCreateError(null);
     try {
       const result = await apiClient.createSession(currentPath);
       bumpSessionList();
@@ -85,6 +87,9 @@ export function NewSessionModal({ isOpen, onClose }: NewSessionModalProps) {
       onClose();
     } catch (err) {
       console.error('Failed to create session:', err);
+      setCreateError(
+        err instanceof Error ? err.message : 'Failed to create session. Please try again.'
+      );
     } finally {
       setIsCreating(false);
     }
@@ -222,7 +227,11 @@ export function NewSessionModal({ isOpen, onClose }: NewSessionModalProps) {
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-4 border-t border-gray-200 flex items-center gap-3">
+        <div className="px-5 py-4 border-t border-gray-200">
+          {createError && (
+            <p className="text-sm text-red-500 mb-3">{createError}</p>
+          )}
+          <div className="flex items-center gap-3">
           <div className="flex-1 min-w-0">
             <p className="text-xs font-mono text-gray-500 truncate" title={currentPath}>
               {currentPath}
@@ -241,6 +250,7 @@ export function NewSessionModal({ isOpen, onClose }: NewSessionModalProps) {
           >
             {isCreating ? 'Creating...' : 'Select This Directory'}
           </button>
+          </div>
         </div>
       </div>
     </div>
