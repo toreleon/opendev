@@ -4,8 +4,12 @@ import os
 import platform
 import subprocess
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+_last_played: float = 0.0
+_COOLDOWN_SECONDS: float = 30.0
 
 def play_finish_sound():
     """Play a sound to indicate task completion.
@@ -13,6 +17,12 @@ def play_finish_sound():
     Tries various system-specific methods to play a sound.
     Fails silently if no method works.
     """
+    global _last_played
+    now = time.monotonic()
+    if now - _last_played < _COOLDOWN_SECONDS:
+        return
+    _last_played = now
+
     system = platform.system()
     try:
         if system == "Darwin":  # macOS
