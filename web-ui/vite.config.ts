@@ -29,7 +29,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../swecli/web/static',
+    outDir: '../opendev/web/static',
     emptyOutDir: true,
   },
 })

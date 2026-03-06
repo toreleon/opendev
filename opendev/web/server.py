@@ -160,7 +160,7 @@ def create_app() -> FastAPI:
             <p><strong>Status:</strong> Development mode</p>
             <p>The React frontend is not yet built. To develop the UI:</p>
             <ol>
-                <li>Navigate to <code>swecli/web-ui/</code></li>
+                <li>Navigate to <code>web-ui/</code></li>
                 <li>Run <code>npm install</code></li>
                 <li>Run <code>npm run dev</code></li>
                 <li>Frontend will be available at <a href="http://localhost:5173">http://localhost:5173</a></li>
