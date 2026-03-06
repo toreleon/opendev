@@ -45,17 +45,6 @@ opendev -p "explain this codebase"
 opendev --continue
 ```
 
-### Agents
-
-OpenDev includes two built-in agents you can switch between with `Shift+Tab`.
-
-- **main** - Default, full-access agent for development work
-- **plan** - Read-only agent for analysis and code exploration
-  - Denies file edits by default
-  - Ideal for exploring unfamiliar codebases or planning changes
-
-Also included are specialized subagents for code exploration, planning, and web tasks. These are used internally and invoked automatically when needed.
-
 ### Multi-Provider Support
 
 OpenDev is not coupled to any single provider. It supports OpenAI, Anthropic, Fireworks, Google, and any OpenAI-compatible endpoint. Different tasks (planning, execution, compaction) can each bind to a different model, letting you optimize cost and capability independently.
