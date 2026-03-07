@@ -22,6 +22,7 @@ from opendev.ui_textual.widgets.conversation.tool_renderer.types import (
     TREE_LAST,
     TREE_VERTICAL,
     NestedToolState,
+    SingleAgentToolLine,
     SingleAgentToolRecord,
 )
 
@@ -95,17 +96,86 @@ class NestedToolMixin:
             else:
                 tool_name = plain_text.split()[0] if plain_text.split() else "unknown"
 
-            self._single_agent.tool_count += 1
-            self._single_agent.current_tool = plain_text
-            self._single_agent.tool_records.append(
+            agent = self._single_agent
+            agent.tool_count += 1
+            agent.current_tool = plain_text
+            agent.tool_records.append(
                 SingleAgentToolRecord(
                     tool_name=tool_name,
                     display_text=plain_text,
                 )
             )
 
+            # Generate a stable tool_id for tracking this line
+            tracking_id = tool_id or f"{parent}_{tool_name}_{agent.tool_count}"
+
+            visible_count = len(agent.active_tool_lines)
+
+            if visible_count == 0:
+                # First tool: update existing tool_line in place
+                agent.active_tool_lines[tracking_id] = SingleAgentToolLine(
+                    tool_id=tracking_id,
+                    line_number=agent.tool_line,
+                    display_text=plain_text,
+                )
+                agent.slot_lines.append(agent.tool_line)
+                self._render_single_agent_tool_line(agent.tool_line, plain_text)
+            elif visible_count < agent.MAX_VISIBLE_TOOLS:
+                # Append new tool line
+                row = Text()
+                row.append("     ", style="")
+                row.append(f"{self._nested_spinner_char} ", style=GREEN_GRADIENT[0])
+                row.append(plain_text, style=SUBTLE)
+                self.log.write(row, scroll_end=True, animate=False, wrappable=False)
+                line_num = len(self.log.lines) - 1
+                agent.active_tool_lines[tracking_id] = SingleAgentToolLine(
+                    tool_id=tracking_id,
+                    line_number=line_num,
+                    display_text=plain_text,
+                )
+                agent.slot_lines.append(line_num)
+            else:
+                # Try to evict the oldest completed tool from visible slots
+                evict_id = None
+                for tid, tl in agent.active_tool_lines.items():
+                    if tl.completed:
+                        evict_id = tid
+                        break
+
+                if evict_id:
+                    # Evict completed tool, add new one in its place
+                    del agent.active_tool_lines[evict_id]
+                    agent.hidden_count += 1
+                    agent.active_tool_lines[tracking_id] = SingleAgentToolLine(
+                        tool_id=tracking_id,
+                        line_number=0,  # Will be reassigned during re-render
+                        display_text=plain_text,
+                    )
+                    # Re-render all slots with current active tools
+                    self._rerender_single_agent_slots(agent)
+                else:
+                    # All visible tools still running — just count as hidden
+                    agent.hidden_count += 1
+
+                # Update overflow counter
+                hidden_count = agent.hidden_count
+                overflow_text = Text()
+                overflow_text.append(
+                    f"     +{hidden_count} more tool uses", style=f"{SUBTLE} italic"
+                )
+                if agent.overflow_line is None:
+                    self.log.write(
+                        overflow_text, scroll_end=True, animate=False, wrappable=False
+                    )
+                    agent.overflow_line = len(self.log.lines) - 1
+                else:
+                    strip = self._text_to_strip(overflow_text)
+                    if agent.overflow_line < len(self.log.lines):
+                        self.log.lines[agent.overflow_line] = strip
+                        self.log.refresh_line(agent.overflow_line)
+
             self._update_header_spinner()
-            self._update_single_agent_tool_line()
+            self._start_nested_tool_timer()
             return
 
         # If active parallel group: update agent stats and status line in-place
@@ -164,6 +234,54 @@ class NestedToolMixin:
 
         self._start_nested_tool_timer()
 
+    def _render_single_agent_tool_line(
+        self, line_number: int, display_text: str, color_index: int = 0, is_first: bool = True
+    ) -> None:
+        """Render a single-agent tool line with spinner at a given line number."""
+        if line_number >= len(self.log.lines):
+            return
+
+        prefix = "  \u23bf  " if is_first else "     "
+        row = Text()
+        row.append(prefix, style=GREY)
+        color = GREEN_GRADIENT[color_index % len(GREEN_GRADIENT)]
+        row.append(f"{self._nested_spinner_char} ", style=color)
+        row.append(display_text, style=SUBTLE)
+
+        strip = self._text_to_strip(row)
+        self.log.lines[line_number] = strip
+        self.log.refresh_line(line_number)
+
+    def _rerender_single_agent_slots(self, agent) -> None:
+        """Re-render all visible tool slots after an eviction rotation."""
+        tools = list(agent.active_tool_lines.values())
+        for i, tl in enumerate(tools):
+            if i >= len(agent.slot_lines):
+                break
+            slot_line = agent.slot_lines[i]
+            tl.line_number = slot_line
+            is_first = i == 0
+            prefix = "  \u23bf  " if is_first else "     "
+
+            row = Text()
+            row.append(prefix, style=GREY)
+
+            if tl.completed:
+                status_char = "\u2713" if tl.success else "\u2717"
+                status_color = SUCCESS if tl.success else ERROR
+                row.append(f"{status_char} ", style=status_color)
+                row.append(tl.display_text, style=SUBTLE)
+                row.append(f" ({tl.elapsed_s}s)", style=GREY)
+            else:
+                color = GREEN_GRADIENT[tl.color_index % len(GREEN_GRADIENT)]
+                row.append(f"{self._nested_spinner_char} ", style=color)
+                row.append(tl.display_text, style=SUBTLE)
+
+            strip = self._text_to_strip(row)
+            if slot_line < len(self.log.lines):
+                self.log.lines[slot_line] = strip
+                self.log.refresh_line(slot_line)
+
     def _build_tree_indent(self, depth: int, parent: str, is_last: bool) -> str:
         """Build tree connector prefix for nested tool display.
 
@@ -211,6 +329,42 @@ class NestedToolMixin:
                 if record.tool_name == tool_name and record.success is True:
                     record.success = success
                     break
+
+        # For single agent: update the tool line in place (spinner → checkmark)
+        if self._single_agent is not None and self._single_agent.active_tool_lines:
+            tool_line_state = None
+            if tool_id and tool_id in self._single_agent.active_tool_lines:
+                tool_line_state = self._single_agent.active_tool_lines[tool_id]
+            else:
+                # Fallback: find first non-completed tool matching tool_name
+                for tid, tl in self._single_agent.active_tool_lines.items():
+                    if not tl.completed and tool_name in tl.display_text:
+                        tool_line_state = tl
+                        break
+
+            if tool_line_state is not None and not tool_line_state.completed:
+                tool_line_state.completed = True
+                tool_line_state.success = success
+                elapsed = round(time.monotonic() - tool_line_state.timer_start)
+                tool_line_state.elapsed_s = elapsed
+
+                # Determine prefix based on line position
+                is_first = tool_line_state.line_number == self._single_agent.tool_line
+                prefix = "  \u23bf  " if is_first else "     "
+
+                row = Text()
+                row.append(prefix, style=GREY)
+                status_char = "\u2713" if success else "\u2717"
+                status_color = SUCCESS if success else ERROR
+                row.append(f"{status_char} ", style=status_color)
+                row.append(tool_line_state.display_text, style=SUBTLE)
+                row.append(f" ({elapsed}s)", style=GREY)
+
+                strip = self._text_to_strip(row)
+                if tool_line_state.line_number < len(self.log.lines):
+                    self.log.lines[tool_line_state.line_number] = strip
+                    self.log.refresh_line(tool_line_state.line_number)
+                return
 
         # Try to find the tool in multi-tool tracking dict
         state: Optional[NestedToolState] = None
@@ -324,9 +478,17 @@ class NestedToolMixin:
                     self._agent_spinner_states[tool_call_id] = idx
                     self._update_agent_row_gradient(agent, idx)
 
-        # Animate single agent: header spinner
+        # Animate single agent: header spinner + active tool lines
         if self._single_agent is not None and self._single_agent.status == "running":
             self._update_header_spinner()
+            # Animate each active (non-completed) tool line
+            for tl in self._single_agent.active_tool_lines.values():
+                if not tl.completed:
+                    tl.color_index = (tl.color_index + 1) % len(GREEN_GRADIENT)
+                    is_first = tl.line_number == self._single_agent.tool_line
+                    self._render_single_agent_tool_line(
+                        tl.line_number, tl.display_text, tl.color_index, is_first
+                    )
 
         # Schedule next animation frame
         interval = 0.15

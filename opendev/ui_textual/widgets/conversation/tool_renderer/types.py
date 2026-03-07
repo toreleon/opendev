@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import ClassVar, Dict, List
 
 
 # Tree connector characters
@@ -53,20 +53,41 @@ class SingleAgentToolRecord:
 
 
 @dataclass
+class SingleAgentToolLine:
+    """Tracks an active tool line within a single-agent display."""
+
+    tool_id: str
+    line_number: int
+    display_text: str
+    timer_start: float = field(default_factory=time.monotonic)
+    color_index: int = 0
+    completed: bool = False
+    success: bool = True
+    elapsed_s: int = 0  # Stored on completion for re-rendering during rotation
+
+
+@dataclass
 class SingleAgentInfo:
     """Info for a single (non-parallel) agent execution."""
+
+    MAX_VISIBLE_TOOLS: ClassVar[int] = 3
 
     agent_type: str
     description: str
     tool_call_id: str
     header_line: int = 0  # Line for header
-    tool_line: int = 0  # Line for current tool
+    tool_line: int = 0  # Line for current tool (first tool line)
     tool_count: int = 0
     current_tool: str = "Initializing..."
     status: str = "running"
     start_time: float = field(default_factory=time.monotonic)
     tool_records: List[SingleAgentToolRecord] = field(default_factory=list)
     failure_reason: str = ""  # Why the agent failed (API error, etc.)
+    # Multi-tool tracking: tool_id -> SingleAgentToolLine
+    active_tool_lines: Dict[str, "SingleAgentToolLine"] = field(default_factory=dict)
+    overflow_line: int | None = None  # Line number for "+N more" text
+    slot_lines: List[int] = field(default_factory=list)  # Fixed line numbers for visible slots
+    hidden_count: int = 0  # Tools evicted from view (for overflow counter)
 
 
 @dataclass
