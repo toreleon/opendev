@@ -140,3 +140,77 @@ class MCPManager(TransportMixin, ConnectionMixin, ServerConfigMixin):
         if self._config is None:
             self._config = self.load_configuration()
         return self._config
+
+    # MCP Prompts
+
+    async def _list_prompts_internal(self) -> List[dict]:
+        """Internal coroutine to list prompts from all connected MCP servers."""
+        prompts: List[dict] = []
+        for server_name, client in self.clients.items():
+            try:
+                result = await client.list_prompts()
+                for prompt in result.prompts:
+                    prompts.append({
+                        "server_name": server_name,
+                        "prompt_name": prompt.name,
+                        "description": prompt.description or "",
+                        "arguments": [a.name for a in (prompt.arguments or [])],
+                        "command": f"/{server_name}:{prompt.name}",
+                    })
+            except Exception:
+                continue
+        return prompts
+
+    def list_prompts_sync(self, timeout: int = 15) -> List[dict]:
+        """List available prompts from all connected MCP servers.
+
+        Returns:
+            List of dicts with server_name, prompt_name, description, arguments, command.
+        """
+        return self._run_coroutine_threadsafe(
+            self._list_prompts_internal(), timeout=timeout
+        )
+
+    async def _get_prompt_internal(
+        self, server_name: str, prompt_name: str, arguments: Optional[Dict[str, str]] = None
+    ) -> Optional[str]:
+        """Internal coroutine to get a prompt from an MCP server."""
+        if server_name not in self.clients:
+            return None
+        client = self.clients[server_name]
+        try:
+            result = await client.get_prompt(prompt_name, arguments or {})
+            # Extract text from prompt messages
+            parts = []
+            for msg in result.messages:
+                if hasattr(msg.content, "text"):
+                    parts.append(msg.content.text)
+                elif isinstance(msg.content, str):
+                    parts.append(msg.content)
+                elif isinstance(msg.content, list):
+                    for block in msg.content:
+                        if hasattr(block, "text"):
+                            parts.append(block.text)
+            return "\n".join(parts) if parts else str(result)
+        except Exception as e:
+            return f"Error getting prompt: {e}"
+
+    def get_prompt_sync(
+        self, server_name: str, prompt_name: str, arguments: Optional[Dict[str, str]] = None,
+        timeout: int = 15,
+    ) -> Optional[str]:
+        """Get a prompt from an MCP server (synchronous wrapper).
+
+        Args:
+            server_name: Name of the MCP server.
+            prompt_name: Name of the prompt.
+            arguments: Optional arguments for the prompt.
+            timeout: Timeout in seconds.
+
+        Returns:
+            The prompt text, or None if unavailable.
+        """
+        return self._run_coroutine_threadsafe(
+            self._get_prompt_internal(server_name, prompt_name, arguments),
+            timeout=timeout,
+        )
