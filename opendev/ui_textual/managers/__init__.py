@@ -6,6 +6,7 @@ from .tool_summary_manager import ToolSummaryManager
 from .approval_manager import ChatApprovalManager
 from .spinner_service import SpinnerService, SpinnerType, SpinnerFrame, SpinnerConfig
 from .interrupt_manager import InterruptManager, InterruptState, InterruptContext
+from .frecency_manager import FrecencyManager
 
 __all__ = [
     "ConsoleBufferManager",
@@ -19,4 +20,5 @@ __all__ = [
     "InterruptManager",
     "InterruptState",
     "InterruptContext",
+    "FrecencyManager",
 ]
