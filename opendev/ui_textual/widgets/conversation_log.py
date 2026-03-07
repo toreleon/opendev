@@ -643,6 +643,33 @@ class ConversationLog(RichLog):
     def add_edit_diff_result(self, diff_text: str, depth: int, is_last_parent: bool = True) -> None:
         self._tool_renderer.add_edit_diff_result(diff_text, depth, is_last_parent)
 
+    def add_extra_edit_block(
+        self,
+        file_path: str,
+        start_line: int,
+        additions: int,
+        removals: int,
+        hunk_entries: list,
+    ) -> None:
+        """Render a completed Edit block for an additional hunk (main agent)."""
+        self._tool_renderer.add_extra_edit_block(
+            file_path, start_line, additions, removals, hunk_entries
+        )
+
+    def add_nested_extra_edit_block(
+        self,
+        file_path: str,
+        start_line: int,
+        additions: int,
+        removals: int,
+        hunk_entries: list,
+        depth: int,
+    ) -> None:
+        """Render an additional edit hunk block in nested/subagent context."""
+        self._tool_renderer.add_nested_extra_edit_block(
+            file_path, start_line, additions, removals, hunk_entries, depth
+        )
+
     def add_plan_content_box(self, plan_content: str) -> None:
         self._tool_renderer.add_plan_content_box(plan_content)
 

@@ -287,8 +287,80 @@ class CallbackToolDisplayMixin:
                 if self.chat_app and hasattr(self.chat_app, "status_bar"):
                     self._run_on_ui(lambda: self.chat_app.status_bar.set_mode("normal"))
 
-        # Format the result using the Claude-style formatter
         normalized_args = self._normalize_arguments(tool_args)
+
+        # Multi-hunk edit: display each hunk as a separate Edit block
+        if tool_name == "edit_file" and isinstance(result, dict) and result.get("success"):
+            hunks = self.formatter.get_edit_hunks(normalized_args, result)
+            if hunks:
+                file_path = normalized_args.get("file_path", "unknown")
+                first = hunks[0]
+
+                # Build per-hunk summary for the first hunk
+                def _plural(count: int, singular: str) -> str:
+                    return f"{count} {singular}" if count == 1 else f"{count} {singular}s"
+
+                parts = []
+                if first["additions"]:
+                    parts.append(_plural(first["additions"], "addition"))
+                if first["removals"]:
+                    parts.append(_plural(first["removals"], "removal"))
+                first_summary = f"Updated {file_path} ({', '.join(parts)})"
+
+                # Update spinner display text to include "at line N" before stopping
+                if spinner_id and self._app is not None and hasattr(self._app, "spinner_service"):
+                    svc = self._app.spinner_service
+                    if spinner_id in svc._spinner_displays:
+                        from rich.text import Text as RichText
+                        from opendev.ui_textual.style_tokens import CYAN as _CYAN, PRIMARY as _PRIMARY
+
+                        new_display = RichText()
+                        new_display.append("Edit(", style=_CYAN)
+                        new_display.append(file_path, style=_PRIMARY)
+                        new_display.append(f") at line {first['start_line']}", style=_CYAN)
+                        svc._spinner_displays[spinner_id] = new_display
+
+                    svc.stop(spinner_id, success, first_summary)
+                else:
+                    if hasattr(self.conversation, "stop_tool_execution"):
+                        self._run_on_ui(lambda: self.conversation.stop_tool_execution(success))
+
+                # Render first hunk's diff lines as continuation
+                first_diff_lines = []
+                for entry_type, line_no, content in first["entries"]:
+                    display_no = f"{line_no:>4}" if line_no is not None else "    "
+                    sanitized = content.replace("\t", "    ")
+                    if entry_type == "add":
+                        first_diff_lines.append(f"{display_no} + {sanitized}")
+                    elif entry_type == "del":
+                        first_diff_lines.append(f"{display_no} - {sanitized}")
+                    else:
+                        first_diff_lines.append(f"{display_no}   {sanitized}")
+                if first_diff_lines:
+                    self._run_on_ui(
+                        self.conversation.add_tool_result_continuation, first_diff_lines
+                    )
+
+                # Render additional hunks as separate Edit blocks
+                for hunk in hunks[1:]:
+                    self._run_on_ui(
+                        self.conversation.add_extra_edit_block,
+                        file_path,
+                        hunk["start_line"],
+                        hunk["additions"],
+                        hunk["removals"],
+                        hunk["entries"],
+                    )
+
+                if [first_summary] and self.chat_app and hasattr(self.chat_app, "record_tool_summary"):
+                    self._run_on_ui(
+                        self.chat_app.record_tool_summary, tool_name, normalized_args, [first_summary]
+                    )
+
+                # Auto-refresh todo panel (edit_file won't trigger, but keep pattern)
+                return
+
+        # Format the result using the Claude-style formatter
         formatted = self.formatter.format_tool_result(tool_name, normalized_args, result)
 
         # Extract the result line(s) from the formatted output
@@ -347,7 +419,7 @@ class CallbackToolDisplayMixin:
             )
 
         # Auto-refresh todo panel after todo tool execution
-        if tool_name in {"write_todos", "update_todo", "complete_todo"}:
+        if tool_name in {"write_todos", "update_todo", "complete_todo", "clear_todos"}:
             logger.debug(f"[CALLBACK] Todo tool completed: {tool_name}, refreshing panel")
             self._refresh_todo_panel()
 
@@ -442,9 +514,10 @@ class CallbackToolDisplayMixin:
             )
         )
 
-        # Skip ALL display when in collapsed parallel mode
+        # Skip display when in actual parallel agent group mode (not single agent)
         # The header shows aggregated stats, individual tool results are hidden
-        if self._in_parallel_agent_group:
+        # But for single agents, we need completions to update tool line spinners → checkmarks
+        if self._in_parallel_agent_group and not self._current_single_agent_id:
             return
 
         # Update the nested tool call status to complete (for ALL tools including bash)
@@ -460,6 +533,10 @@ class CallbackToolDisplayMixin:
                 success,
                 tool_id,
             )
+
+        # In single-agent mode, skip sub-result display — only checkmark updates matter
+        if self._current_single_agent_id:
+            return
 
         normalized_args = self._normalize_arguments(tool_args)
 
@@ -508,7 +585,7 @@ class CallbackToolDisplayMixin:
             self._display_tool_sub_result(tool_name, normalized_args, result, depth)
 
         # Auto-refresh todo panel after nested todo tool execution
-        if tool_name in {"write_todos", "update_todo", "complete_todo"}:
+        if tool_name in {"write_todos", "update_todo", "complete_todo", "clear_todos"}:
             logger.debug(f"[CALLBACK] Nested todo tool completed: {tool_name}, refreshing panel")
             self._refresh_todo_panel()
 
@@ -541,8 +618,64 @@ class CallbackToolDisplayMixin:
         if tool_name == "edit_file" and result.get("success"):
             diff_text = result.get("diff", "")
             if diff_text and hasattr(self.conversation, "add_edit_diff_result"):
-                # Show summary line first
                 file_path = tool_args.get("file_path", "unknown")
+
+                # Check for multi-hunk edits
+                hunks = self.formatter.get_edit_hunks(tool_args, result)
+                if hunks:
+                    # Multi-hunk: show first hunk with standard summary + diff,
+                    # additional hunks as separate blocks
+                    first = hunks[0]
+
+                    def _plural_h(count: int, singular: str) -> str:
+                        return f"{count} {singular}" if count == 1 else f"{count} {singular}s"
+
+                    parts = []
+                    if first["additions"]:
+                        parts.append(_plural_h(first["additions"], "addition"))
+                    if first["removals"]:
+                        parts.append(_plural_h(first["removals"], "removal"))
+                    summary = f"Updated {file_path} ({', '.join(parts)})"
+                    self._run_on_ui(
+                        self.conversation.add_nested_tool_sub_results, [summary], depth
+                    )
+
+                    # Build partial diff for first hunk only
+                    from opendev.ui_textual.formatters_internal.utils import DiffParser
+
+                    all_entries = DiffParser.parse_unified_diff(diff_text)
+                    all_hunks = DiffParser.group_by_hunk(all_entries)
+                    if all_hunks:
+                        # Reconstruct diff text for first hunk only
+                        first_start, first_entries = all_hunks[0]
+                        first_diff_lines = [f"@@ -1 +{first_start} @@"]
+                        for etype, lno, content in first_entries:
+                            if etype == "add":
+                                first_diff_lines.append(f"+{content}")
+                            elif etype == "del":
+                                first_diff_lines.append(f"-{content}")
+                            else:
+                                first_diff_lines.append(f" {content}")
+                        self._run_on_ui(
+                            self.conversation.add_edit_diff_result,
+                            "\n".join(first_diff_lines),
+                            depth,
+                        )
+
+                    # Render additional hunks as separate blocks
+                    for hunk in hunks[1:]:
+                        self._run_on_ui(
+                            self.conversation.add_nested_extra_edit_block,
+                            file_path,
+                            hunk["start_line"],
+                            hunk["additions"],
+                            hunk["removals"],
+                            hunk["entries"],
+                            depth,
+                        )
+                    return
+
+                # Single hunk: show summary + full diff (existing behavior)
                 lines_added = result.get("lines_added", 0) or 0
                 lines_removed = result.get("lines_removed", 0) or 0
 

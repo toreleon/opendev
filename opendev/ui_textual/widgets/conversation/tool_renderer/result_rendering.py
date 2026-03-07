@@ -10,7 +10,9 @@ from rich.text import Text
 from opendev.ui_textual.style_tokens import (
     CYAN,
     ERROR,
+    GREEN_BRIGHT,
     GREY,
+    PRIMARY,
     SUBTLE,
     SUCCESS,
 )
@@ -195,3 +197,65 @@ class ResultRenderingMixin:
 
                 self.log.write(formatted, scroll_end=True, animate=False, wrappable=False)
                 line_idx += 1
+
+    def add_nested_extra_edit_block(
+        self,
+        file_path: str,
+        start_line: int,
+        additions: int,
+        removals: int,
+        hunk_entries: list,
+        depth: int,
+    ) -> None:
+        """Render an additional edit hunk block in nested/subagent context."""
+        indent = "  " * depth
+
+        # Header: ⏺ Edit(file.py) at line N
+        header = Text()
+        header.append(indent)
+        header.append("⏺ ", style=GREEN_BRIGHT)
+        header.append("Edit(", style=CYAN)
+        header.append(file_path, style=PRIMARY)
+        header.append(f") at line {start_line}", style=CYAN)
+        self.log.write(header, scroll_end=True, animate=False, wrappable=False)
+
+        # Summary line
+        def _plural(count: int, singular: str) -> str:
+            return f"{count} {singular}" if count == 1 else f"{count} {singular}s"
+
+        parts = []
+        if additions:
+            parts.append(_plural(additions, "addition"))
+        if removals:
+            parts.append(_plural(removals, "removal"))
+        summary_text = ", ".join(parts) if parts else "no changes"
+
+        summary = Text()
+        summary.append(indent)
+        summary.append("  ⎿  ", style=GREY)
+        summary.append(f"Updated {file_path} ({summary_text})", style=SUBTLE)
+        self.log.write(summary, scroll_end=True, animate=False, wrappable=False)
+
+        # Diff lines
+        for entry_type, line_no, content in hunk_entries:
+            formatted = Text()
+            formatted.append(indent)
+            formatted.append("     ")
+
+            display_no = f"{line_no:>4} " if line_no is not None else "     "
+            sanitized = content.replace("\t", "    ")
+
+            if entry_type == "add":
+                formatted.append(display_no, style=SUBTLE)
+                formatted.append("+ ", style=SUCCESS)
+                formatted.append(sanitized, style=SUCCESS)
+            elif entry_type == "del":
+                formatted.append(display_no, style=SUBTLE)
+                formatted.append("- ", style=ERROR)
+                formatted.append(sanitized, style=ERROR)
+            else:
+                formatted.append(display_no, style=SUBTLE)
+                formatted.append("  ", style=SUBTLE)
+                formatted.append(sanitized, style=SUBTLE)
+
+            self.log.write(formatted, scroll_end=True, animate=False, wrappable=False)

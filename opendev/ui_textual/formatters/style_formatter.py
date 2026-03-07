@@ -162,6 +162,43 @@ class StyleFormatter:
         size_display = f"{size_kb:.1f} KB" if size_kb >= 1 else f"{size_bytes} B"
         return [f"Created {Path(file_path).name} • {size_display} • {lines} lines"]
 
+    def get_edit_hunks(
+        self, tool_args: Dict[str, Any], result: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Parse an edit result into per-hunk display data.
+
+        Returns list of dicts with keys: start_line, additions, removals, entries.
+        Returns empty list if single hunk or no diff (callers use existing path).
+        """
+        from opendev.ui_textual.formatters_internal.utils import DiffParser
+
+        if not result.get("success"):
+            return []
+
+        diff_text = result.get("diff") or ""
+        if not diff_text:
+            return []
+
+        diff_entries = DiffParser.parse_unified_diff(diff_text)
+        if not diff_entries:
+            return []
+
+        hunks = DiffParser.group_by_hunk(diff_entries)
+        if len(hunks) <= 1:
+            return []
+
+        hunk_data = []
+        for start_line, hunk_entries in hunks:
+            additions = sum(1 for t, _, _ in hunk_entries if t == "add")
+            removals = sum(1 for t, _, _ in hunk_entries if t == "del")
+            hunk_data.append({
+                "start_line": start_line,
+                "additions": additions,
+                "removals": removals,
+                "entries": hunk_entries,
+            })
+        return hunk_data
+
     def _format_edit_file_result(
         self, tool_args: Dict[str, Any], result: Dict[str, Any]
     ) -> List[str]:

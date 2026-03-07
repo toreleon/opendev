@@ -39,6 +39,7 @@ from opendev.ui_textual.widgets.conversation.tool_renderer.types import (  # noq
     TREE_CONTINUATION,
     NestedToolState,
     AgentInfo,
+    SingleAgentToolLine,
     SingleAgentToolRecord,
     SingleAgentInfo,
     ParallelAgentGroup,
@@ -213,7 +214,7 @@ class DefaultToolRenderer(
         self.log.refresh()
 
     def _interrupt_single_agent(self) -> None:
-        """Collapse single agent: delete tool line, update header to red bullet."""
+        """Collapse single agent: delete all tool lines, update header to red bullet."""
         agent = self._single_agent
         agent.status = "failed"
 
@@ -226,10 +227,22 @@ class DefaultToolRenderer(
         if agent.header_line < len(self.log.lines):
             self.log.lines[agent.header_line] = strip
 
-        if agent.tool_line < len(self.log.lines):
-            del self.log.lines[agent.tool_line]
-            if hasattr(self.log, "_block_registry"):
-                self.log._block_registry.remove_blocks_from(agent.tool_line)
+        # Collect all tool lines to delete (tool_line + extras + overflow)
+        lines_to_delete = [agent.tool_line]
+        for tl in agent.active_tool_lines.values():
+            if tl.line_number != agent.tool_line:
+                lines_to_delete.append(tl.line_number)
+        if agent.overflow_line is not None:
+            lines_to_delete.append(agent.overflow_line)
+
+        # Delete in reverse order to preserve indices
+        for line_num in sorted(lines_to_delete, reverse=True):
+            if line_num < len(self.log.lines):
+                del self.log.lines[line_num]
+
+        first_deleted = min(lines_to_delete) if lines_to_delete else agent.tool_line
+        if hasattr(self.log, "_block_registry"):
+            self.log._block_registry.remove_blocks_from(first_deleted)
 
         if hasattr(self.log, "_line_cache"):
             self.log._line_cache.clear()
@@ -286,6 +299,14 @@ class DefaultToolRenderer(
                 self._single_agent.header_line += delta
             if self._single_agent.tool_line >= first_affected:
                 self._single_agent.tool_line += delta
+            for tl in self._single_agent.active_tool_lines.values():
+                if tl.line_number >= first_affected:
+                    tl.line_number += delta
+            if (
+                self._single_agent.overflow_line is not None
+                and self._single_agent.overflow_line >= first_affected
+            ):
+                self._single_agent.overflow_line += delta
 
         self._streaming_box_header_line = adj(self._streaming_box_header_line)
         self._streaming_box_top_line = adj(self._streaming_box_top_line)
@@ -627,6 +648,26 @@ class DefaultToolRenderer(
             self.log.lines[agent.header_line] = strip
             self.log.refresh_line(agent.header_line)
 
+        # Delete extra tool lines (all lines after tool_line that we appended)
+        extra_lines = sorted(
+            [
+                tl.line_number
+                for tl in agent.active_tool_lines.values()
+                if tl.line_number != agent.tool_line
+            ]
+        )
+        if agent.overflow_line is not None:
+            extra_lines.append(agent.overflow_line)
+        # Delete in reverse order to preserve indices
+        for line_num in sorted(extra_lines, reverse=True):
+            if line_num < len(self.log.lines):
+                del self.log.lines[line_num]
+        if extra_lines:
+            if hasattr(self.log, "_line_cache"):
+                self.log._line_cache.clear()
+            if hasattr(self.log, "_recalculate_virtual_size"):
+                self.log._recalculate_virtual_size()
+
         elapsed = int(time.monotonic() - agent.start_time)
         tool_word = "tool use" if agent.tool_count == 1 else "tool uses"
         tool_row = Text()
@@ -655,6 +696,7 @@ class DefaultToolRenderer(
         self._completed_single_agent = agent
         self._single_agent_expanded = False
         self._single_agent = None
+        self.log.refresh()
 
     # --- Utility / Helpers ---
 
@@ -805,6 +847,62 @@ class DefaultToolRenderer(
         formatted.append(" (0s)", style=GREY)
 
         self.log.write(formatted, wrappable=False)
+
+    def add_extra_edit_block(
+        self,
+        file_path: str,
+        start_line: int,
+        additions: int,
+        removals: int,
+        hunk_entries: list,
+    ) -> None:
+        """Render a completed Edit block for an additional hunk (not spinner-managed)."""
+        self._spacing.before_tool_call()
+
+        # Header: ⏺ Edit(file.py) at line N
+        header = Text()
+        header.append("⏺ ", style=GREEN_BRIGHT)
+        header.append("Edit(", style=CYAN)
+        header.append(file_path, style=PRIMARY)
+        header.append(f") at line {start_line}", style=CYAN)
+        self.log.write(header, wrappable=False)
+
+        # Summary: ⎿  Updated file.py (N additions, M removals)
+        def _plural(count: int, singular: str) -> str:
+            return f"{count} {singular}" if count == 1 else f"{count} {singular}s"
+
+        parts = []
+        if additions:
+            parts.append(_plural(additions, "addition"))
+        if removals:
+            parts.append(_plural(removals, "removal"))
+        summary_text = ", ".join(parts) if parts else "no changes"
+
+        summary = Text("  ⎿  ", style=GREY)
+        summary.append(f"Updated {file_path} ({summary_text})", style=SUBTLE)
+        self.log.write(summary, wrappable=False)
+
+        # Diff lines
+        for entry_type, line_no, content in hunk_entries:
+            formatted = Text("     ")
+            display_no = f"{line_no:>4} " if line_no is not None else "     "
+            sanitized = content.replace("\t", "    ")
+
+            if entry_type == "add":
+                formatted.append(display_no, style=SUBTLE)
+                formatted.append("+ ", style=SUCCESS)
+                formatted.append(sanitized, style=SUCCESS)
+            elif entry_type == "del":
+                formatted.append(display_no, style=SUBTLE)
+                formatted.append("- ", style=ERROR)
+                formatted.append(sanitized, style=ERROR)
+            else:
+                formatted.append(display_no, style=SUBTLE)
+                formatted.append("  ", style=SUBTLE)
+                formatted.append(sanitized, style=SUBTLE)
+            self.log.write(formatted, wrappable=False)
+
+        self._spacing.after_tool_result()
 
     # --- Tool Result Parsing Helpers ---
 
