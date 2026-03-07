@@ -11,6 +11,88 @@ from opendev.setup.wizard import config_exists
 from opendev.ui_textual.runner import launch_textual_cli
 
 
+def _pick_session_interactively(working_dir: "Path") -> "str | None":
+    """Show an interactive numbered session list and let the user pick one.
+
+    Returns the selected session ID, or None if cancelled / no sessions.
+    """
+    import os
+    from datetime import datetime
+
+    from rich.console import Console
+    from rich.table import Table
+
+    from opendev.core.context_engineering.history import SessionManager
+
+    console = Console()
+
+    env_session_dir = os.environ.get("OPENDEV_SESSION_DIR")
+    if env_session_dir:
+        sm = SessionManager(session_dir=Path(env_session_dir))
+    else:
+        sm = SessionManager(working_dir=working_dir)
+
+    sessions = sm.list_sessions()
+    if not sessions:
+        console.print("[yellow]No sessions found for this directory.[/yellow]")
+        return None
+
+    def _relative_time(dt: datetime) -> str:
+        delta = datetime.now() - dt
+        seconds = int(delta.total_seconds())
+        if seconds < 60:
+            return "just now"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}m ago"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours}h ago"
+        days = hours // 24
+        if days < 30:
+            return f"{days}d ago"
+        return dt.strftime("%Y-%m-%d")
+
+    table = Table(title="Sessions", show_lines=False)
+    table.add_column("#", style="bold cyan", width=4)
+    table.add_column("Title", style="white", max_width=40)
+    table.add_column("ID", style="dim")
+    table.add_column("Updated", style="green")
+    table.add_column("Msgs", style="yellow", justify="right")
+
+    for idx, s in enumerate(sessions, 1):
+        table.add_row(
+            str(idx),
+            s.title or "Untitled",
+            s.id,
+            _relative_time(s.updated_at),
+            str(s.message_count),
+        )
+
+    console.print(table)
+
+    while True:
+        try:
+            choice = input("\nSelect session number (or 'q' to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            console.print()
+            return None
+
+        if choice.lower() == "q":
+            return None
+
+        try:
+            num = int(choice)
+        except ValueError:
+            console.print("[red]Please enter a number or 'q'.[/red]")
+            continue
+
+        if 1 <= num <= len(sessions):
+            return sessions[num - 1].id
+
+        console.print(f"[red]Please enter a number between 1 and {len(sessions)}.[/red]")
+
+
 def main() -> None:
     """Main entry point for OpenDev CLI."""
     import sys
@@ -69,8 +151,11 @@ Examples:
     parser.add_argument(
         "--resume",
         "-r",
+        nargs="?",
+        const=True,
+        default=None,
         metavar="SESSION_ID",
-        help="Resume a specific session by its ID",
+        help="Resume a session (optionally specify ID, or pick interactively)",
     )
 
     parser.add_argument(
@@ -207,8 +292,13 @@ Examples:
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg in ("-p", "--prompt", "-d", "--working-dir", "-r", "--resume"):
+        if arg in ("-p", "--prompt", "-d", "--working-dir"):
             i += 2
+        elif arg in ("-r", "--resume"):
+            if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                i += 2
+            else:
+                i += 1
         elif arg.startswith("-"):
             i += 1
         else:
@@ -226,9 +316,16 @@ Examples:
         i = 0
         while i < len(argv):
             arg = argv[i]
-            if arg in ("-p", "--prompt", "-d", "--working-dir", "-r", "--resume"):
+            if arg in ("-p", "--prompt", "-d", "--working-dir"):
                 flags.extend([arg, argv[i + 1]])
                 i += 2
+            elif arg in ("-r", "--resume"):
+                if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                    flags.extend([arg, argv[i + 1]])
+                    i += 2
+                else:
+                    flags.append(arg)
+                    i += 1
             elif arg.startswith("-"):
                 flags.append(arg)
                 i += 1
@@ -345,11 +442,28 @@ Examples:
 
             return
 
+        resume_session_id = None
+        if args.resume is True:
+            # --resume with no ID → interactive picker
+            resume_session_id = _pick_session_interactively(working_dir)
+            if resume_session_id is None:
+                return
+        elif args.resume:
+            # --resume <ID> → validate the session exists
+            sessions = session_manager.list_sessions()
+            if not any(s.id == args.resume for s in sessions):
+                console.print(f"[yellow]Session '{args.resume}' not found.[/yellow]")
+                resume_session_id = _pick_session_interactively(working_dir)
+                if resume_session_id is None:
+                    return
+            else:
+                resume_session_id = args.resume
+
         launch_textual_cli(
             message=bare_prompt,
             working_dir=working_dir,
             continue_session=args.continue_session,
-            resume_session_id=args.resume,
+            resume_session_id=resume_session_id,
             dangerously_skip_permissions=args.dangerously_skip_permissions,
         )
         return
