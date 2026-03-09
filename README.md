@@ -2,7 +2,7 @@
   <img src="logo/logo_long.png" alt="OpenDev Logo" width="400"/>
 </p>
 
-<p align="center">The open source AI coding agent for your terminal.</p>
+<p align="center">Open-source AI coding agent that spawns parallel agents, each bound to the LLM of your choice.</p>
 
 <p align="center">
   <a href="https://pypi.org/project/opendev/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/opendev?style=flat-square" /></a>
