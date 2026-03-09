@@ -27,7 +27,7 @@ OpenDev is an open-source, terminal-native coding agent built as a compound AI s
 
 Work is organized into concurrent sessions composed of specialized sub-agents. Each agent executes typed workflows (Execution, Thinking, Compaction) that independently bind to an LLM, enabling fine-grained cost, latency, and capability trade-offs per workflow.
 
-Each workflow is a modular slot you can bind to any LLM of your choice: **Normal** (execution), **Thinking** (reasoning), **Compact** (context summarization), **Self-Critique** (output verification), and **VLM** (vision). For example, use Claude Opus for execution, GPT-o3 for thinking, and a lightweight Qwen model for compaction. This lets advanced users fine-tune cost, speed, and quality at per-workflow granularity.
+Each workflow is a modular slot you can bind to any LLM of your choice: **Normal** (execution), **Thinking** (reasoning), **Compact** (context summarization), **Self-Critique** (output verification), and **VLM** (vision). For example, use Claude Opus for execution, GPT-o3 for thinking, and a lightweight Qwen model for compaction. Together, these combinations form a compound AI system where multiple models collaborate, each optimized for its role.
 
 <p align="center">
   <img src="figures/top.png" alt="OpenDev Compound AI Architecture" width="700"/>
@@ -38,24 +38,9 @@ Each workflow is a modular slot you can bind to any LLM of your choice: **Normal
 
 ### Why OpenDev?
 
-We designed OpenDev with a bold vision: **what if your coding agent didn't stop working just because you did?**
-
-#### 🤖 Proactive Coding Agent
-
-OpenDev isn't just a reactive assistant that waits for your next prompt. It is designed to be a **proactive coding agent** that can plan, execute, and iterate on tasks — whether you're actively pairing with it or fast asleep. Kick off a complex refactoring, go grab dinner, and come back to a pull request waiting for your review.
-
-#### 🔀 True Multi-Provider, Multi-Model Flexibility
-
-Most AI coding tools lock you into a single provider. OpenDev breaks that wall down. You can assign a **different model from a different provider to every session**, and they all run **in parallel**. Want Claude for planning, GPT for execution, and Gemini for code review — all in the same project, at the same time? Done. Your models, your rules.
-
-#### 💻 TUI + Web UI — Code From Anywhere
-
-OpenDev ships with both a **terminal UI (TUI)** for the terminal purists and a **Web UI** for when you want something a little more visual. Here's where it gets fun: the Web UI can be configured as a **remote session**.
-
-That means you can fire up a coding task from your phone, tuck yourself into bed, and let OpenDev keep shipping code while you drift off to dreamland. 🛏️📱💤
-
-> *"I deployed to production from under my blanket at 2 AM and woke up to passing tests. Is this what peak engineering looks like?"*
-> — You, probably, after using OpenDev
+- 🤖 **Proactive, not reactive.** OpenDev can plan, execute, and iterate autonomously. Kick off a refactoring, walk away, and come back to a PR ready for review.
+- 🔀 **Multi-provider, multi-model.** Assign different models from different providers to every workflow and session, all running in parallel. Your models, your rules.
+- 💻 **TUI + Web UI.** A full terminal UI for power users and a Web UI for visual monitoring. The Web UI supports remote sessions, so you can start a task from your phone and let OpenDev work while you sleep. 🛏️📱
 
 ---
 
