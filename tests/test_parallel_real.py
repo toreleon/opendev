@@ -30,7 +30,6 @@ class MockConversation:
         display,
         depth=1,
         parent="",
-        tool_id="",
         is_last=False,
     ):
         """Track nested tool calls for verification."""
@@ -38,10 +37,9 @@ class MockConversation:
             "display": str(display),
             "depth": depth,
             "parent": parent,
-            "tool_id": tool_id,
             "is_last": is_last,
         })
-        print(f"  [NESTED] depth={depth} parent={parent!r} tool_id={tool_id!r} display={display}")
+        print(f"  [NESTED] depth={depth} parent={parent!r} display={display}")
 
     def on_parallel_agents_start(self, agent_infos):
         """Track parallel agents start."""
@@ -75,9 +73,9 @@ class MockToolRenderer:
     def __init__(self, conversation):
         self.conversation = conversation
 
-    def add_nested_tool_call(self, display, depth, parent, tool_id="", is_last=False):
+    def add_nested_tool_call(self, display, depth, parent, is_last=False):
         """Forward to conversation."""
-        self.conversation.add_nested_tool_call(display, depth, parent, tool_id, is_last)
+        self.conversation.add_nested_tool_call(display, depth, parent, is_last=is_last)
 
 
 class MockUICallback:
@@ -95,7 +93,6 @@ class MockUICallback:
         tool_args,
         depth=1,
         parent="",
-        tool_id="",
     ):
         """Track nested tool calls."""
         call = {
@@ -103,14 +100,12 @@ class MockUICallback:
             "tool_args": tool_args,
             "depth": depth,
             "parent": parent,
-            "tool_id": tool_id,
         }
         self._nested_calls.append(call)
         self.conversation.add_nested_tool_call(
             f"{tool_name}: {tool_args}",
             depth=depth,
             parent=parent,
-            tool_id=tool_id,
         )
 
     def on_parallel_agents_start(self, agent_infos):
@@ -170,14 +165,12 @@ def test_parallel_agent_tracking():
         {"path": "src"},
         depth=1,
         parent="call_abc123def456",  # Matches first agent's tool_call_id
-        tool_id="tool_1",
     )
     ui_callback.on_nested_tool_call(
         "search",
         {"pattern": "async def"},
         depth=1,
         parent="call_abc123def456",
-        tool_id="tool_2",
     )
 
     # Second agent's tools
@@ -186,7 +179,6 @@ def test_parallel_agent_tracking():
         {"path": "."},
         depth=1,
         parent="call_xyz789ghi012",  # Matches second agent's tool_call_id
-        tool_id="tool_3",
     )
 
     print(f"   ✓ {len(ui_callback._nested_calls)} nested tool calls tracked\n")
