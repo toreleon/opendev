@@ -45,8 +45,9 @@ You are meant to be fast. To achieve this:
 
 ## Output
 
-- Answer directly and concisely
-- Cite file paths and line numbers as evidence
+- Lead with a high-level summary: what you found, how it fits together, and any notable patterns or design decisions
+- Then provide technical evidence: cite file paths and line numbers to back up your summary
+- Call out interesting architectural choices, potential issues, or non-obvious relationships between components
 - Communicate your findings as a message — do not create files
 - If the answer is incomplete, state what is known and what the next targeted check would be
 
