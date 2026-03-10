@@ -90,6 +90,9 @@ class WebState:
         self.ws_manager: Optional[Any] = None
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
 
+        # Agent executor (lazily created by websocket handler)
+        self._agent_executor: Optional[Any] = None
+
     def add_ws_client(self, client: Any) -> None:
         """Add a WebSocket client."""
         with self._lock:

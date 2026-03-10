@@ -30,6 +30,29 @@ class AgentExecutor:
         self.executor = ThreadPoolExecutor(max_workers=4)
         atexit.register(self.executor.shutdown, wait=False)
 
+        # Shared thread pool for parallel tool execution across sessions
+        self._shared_parallel_executor = ThreadPoolExecutor(
+            max_workers=5, thread_name_prefix="web-tool"
+        )
+        atexit.register(self._shared_parallel_executor.shutdown, wait=False)
+
+        # Current ReactExecutor per session (for interrupt bridging)
+        self._current_react_executors: Dict[str, Any] = {}
+
+    def interrupt_session(self, session_id: str) -> bool:
+        """Interrupt a running session's ReactExecutor.
+
+        Args:
+            session_id: Session ID to interrupt
+
+        Returns:
+            True if interrupt was requested, False if no executor found
+        """
+        executor = self._current_react_executors.get(session_id)
+        if executor:
+            return executor.request_interrupt()
+        return False
+
     async def execute_query(
         self,
         message: str,
@@ -80,28 +103,11 @@ class AgentExecutor:
                 session,
             )
 
-            # Reconstruct and persist all assistant steps (tool calls + final response)
+            # ReactExecutor handles step-by-step persistence — just log the result
             logger.info(
-                f"Agent response: success={response.get('success')}, "
-                f"has_content={bool(response.get('content'))}"
+                f"Agent response: summary={(response.get('summary') or '')[:100]}, "
+                f"error={response.get('error')}"
             )
-            if response and response.get("success"):
-                web_ui_callback = response.pop("_web_ui_callback", None)
-                thinking_trace = response.get("thinking_trace")
-                reasoning_content = response.get("reasoning_content")
-                token_usage = response.get("usage")
-
-                self._reconstruct_and_persist_messages(
-                    session,
-                    response,
-                    thinking_trace,
-                    reasoning_content,
-                    token_usage,
-                    web_ui_callback,
-                )
-
-            # Save session to persist messages immediately
-            self.state.session_manager.save_session(session)
 
             # Broadcast message complete
             try:
@@ -119,7 +125,7 @@ class AgentExecutor:
 
         except Exception as e:
             # Broadcast error
-            logger.error(f"❌ Agent execution error: {e}")
+            logger.error(f"Agent execution error: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
@@ -131,6 +137,8 @@ class AgentExecutor:
             except Exception as broadcast_err:
                 logger.error(f"Failed to broadcast error: {broadcast_err}")
         finally:
+            # Clean up ReactExecutor reference
+            self._current_react_executors.pop(session_id, None)
             # Always mark session as idle and clean up injection queue
             self.state.set_session_idle(session_id)
             self.state.clear_injection_queue(session_id)
@@ -150,7 +158,7 @@ class AgentExecutor:
         session_id: str,
         session: Any,
     ) -> Dict[str, Any]:
-        """Run agent synchronously in thread pool.
+        """Run agent synchronously in thread pool using ReactExecutor.
 
         Args:
             message: User query
@@ -160,7 +168,7 @@ class AgentExecutor:
             session: Pre-loaded Session object
 
         Returns:
-            Agent response
+            Dict with summary, error, latency_ms
         """
         from opendev.core.runtime.services import RuntimeService
         from opendev.core.context_engineering.tools.implementations import (
@@ -183,6 +191,7 @@ class AgentExecutor:
         from opendev.web.web_ask_user_manager import WebAskUserManager
         from opendev.web.web_ui_callback import WebUICallback
         from opendev.web.ws_tool_broadcaster import WebSocketToolBroadcaster
+        from opendev.repl.react_executor import ReactExecutor
 
         # Clear any previous interrupt flags
         self.state.clear_interrupt()
@@ -227,6 +236,7 @@ class AgentExecutor:
         )
 
         # Wire hooks system
+        hook_manager = None
         try:
             from opendev.core.hooks.loader import load_hooks_config
             from opendev.core.hooks.manager import HookManager
@@ -266,326 +276,60 @@ class AgentExecutor:
 
         cost_tracker = CostTracker()
 
-        # Get agent and replace its tool registry with wrapped version
+        # Get agent
         agent = runtime_suite.agents.normal
         agent.tool_registry = wrapped_registry
         agent._cost_tracker = cost_tracker
-        # Pass the state to the agent for interrupt checking
-        agent.web_state = self.state
-        # Wire injection queue so mid-execution user messages reach the agent loop
-        agent._injection_queue = self.state.get_injection_queue(session_id)
 
-        # Use session directly (no mutation of current_session)
+        # Point session manager at the right session for this execution
+        self.state.session_manager.current_session = session
+
+        # Prepare messages for the ReAct loop
         message_history = session.to_api_messages()
 
-        # Create agent dependencies with web approval manager
-        deps = AgentDependencies(
-            mode_manager=self.state.mode_manager,
-            approval_manager=web_approval_manager,  # Use web-based approval
-            undo_manager=self.state.undo_manager,
+        # Inject system prompt (TUI path does this via query_enhancer.prepare_messages)
+        if not message_history or message_history[0].get("role") != "system":
+            message_history.insert(0, {"role": "system", "content": agent.system_prompt})
+
+        # Create ReactExecutor (no console, no llm_caller, no tool_executor — Web UI mode)
+        react_executor = ReactExecutor(
             session_manager=self.state.session_manager,
-            working_dir=working_dir,
-            console=None,  # No console for web
             config=config,
+            mode_manager=self.state.mode_manager,
+            console=None,
+            llm_caller=None,
+            tool_executor=None,
+            cost_tracker=cost_tracker,
+            parallel_executor=self._shared_parallel_executor,
         )
 
-        # === THINKING PRE-PHASE (mirrors ReactExecutor._get_thinking_trace) ===
-        thinking_trace = None
-        thinking_level_str = self.state.get_thinking_level()
-        if thinking_level_str != "Off":
-            thinking_trace = self._run_thinking_phase(
-                agent, message_history, ws_manager, loop, thinking_level_str,
-                session_id=session_id,
-            )
-            # Inject thinking trace into messages for the action phase
-            if thinking_trace:
-                from opendev.core.agents.prompts.reminders import get_reminder
+        # Wire hooks
+        if hook_manager:
+            react_executor.set_hook_manager(hook_manager)
 
-                message_history.append(
-                    {
-                        "role": "user",
-                        "content": get_reminder(
-                            "thinking_trace_reminder", thinking_trace=thinking_trace
-                        ),
-                    }
-                )
+        # Wire injection queue for mid-execution user messages
+        react_executor._injection_queue = self.state.get_injection_queue(session_id)
 
-        # Run agent
+        # Store for interrupt bridging
+        self._current_react_executors[session_id] = react_executor
+
+        # Execute unified ReAct loop
         try:
-            result = agent.run_sync(
-                message,
-                deps,
-                message_history=message_history,
+            summary, error, latency_ms = react_executor.execute(
+                query=message,
+                messages=message_history,
+                agent=agent,
+                tool_registry=wrapped_registry,
+                approval_manager=web_approval_manager,
+                undo_manager=self.state.undo_manager,
                 ui_callback=web_ui_callback,
             )
-
-            # Broadcast the full response as a chunk
-            logger.info(f"Agent run_sync completed: success={result.get('success')}")
-            if result.get("success"):
-                content = result.get("content", "")
-                logger.info(
-                    f"Broadcasting message_chunk with content length: {len(str(content))}"
-                )
-                try:
-                    future = asyncio.run_coroutine_threadsafe(
-                        ws_manager.broadcast(
-                            {
-                                "type": "message_chunk",
-                                "data": {
-                                    "content": str(content),
-                                    "session_id": session_id,
-                                },
-                            }
-                        ),
-                        loop,
-                    )
-                    future.result(timeout=5)
-                    logger.info("message_chunk broadcasted successfully")
-                except Exception as e:
-                    logger.error(f"Failed to broadcast message_chunk: {e}")
-            else:
-                logger.warning("Agent returned success=False, not broadcasting message_chunk")
-
-            # Include thinking_trace and callback in the returned result for persistence
-            result["thinking_trace"] = thinking_trace
-            result["_web_ui_callback"] = web_ui_callback
-            return result
-
+            return {"summary": summary, "error": error, "latency_ms": latency_ms}
         except Exception as e:
-            return {"success": False, "error": str(e), "content": f"Error: {str(e)}"}
-
-    def _reconstruct_and_persist_messages(
-        self,
-        session: Any,
-        result: Dict[str, Any],
-        thinking_trace: Optional[str],
-        reasoning_content: Optional[str],
-        token_usage: Optional[Dict[str, Any]],
-        web_ui_callback: Any,
-    ) -> None:
-        """Parse run_sync message history and persist all assistant steps with tool calls."""
-        import json
-        from opendev.models.message import ToolCall as ToolCallModel
-        from opendev.core.utils.tool_result_summarizer import summarize_tool_result
-
-        api_messages = result.get("messages", [])
-        original_content = result.get("content", "")
-        is_first_assistant = True
-
-        for i, msg in enumerate(api_messages):
-            if msg.get("role") != "assistant":
-                continue
-
-            content = msg.get("content") or ""
-            raw_tool_calls = msg.get("tool_calls")
-
-            if not raw_tool_calls:
-                # Final assistant message (no tool calls) — persist with metadata
-                assistant_msg = ChatMessage(
-                    role=Role.ASSISTANT,
-                    content=content,
-                    thinking_trace=thinking_trace if is_first_assistant else None,
-                    reasoning_content=reasoning_content if is_first_assistant else None,
-                    token_usage=token_usage,
-                )
-                session.add_message(assistant_msg)
-                is_first_assistant = False
-                continue
-
-            # Assistant message WITH tool_calls — reconstruct ToolCall objects
-            tool_call_objects = []
-            for tc in raw_tool_calls:
-                tc_id = tc["id"]
-                tool_name = tc["function"]["name"]
-                try:
-                    tool_args = json.loads(tc["function"]["arguments"])
-                except (json.JSONDecodeError, TypeError):
-                    tool_args = {"raw": tc["function"].get("arguments", "")}
-
-                # Find matching tool result in subsequent messages
-                tool_result_str = None
-                for j in range(i + 1, len(api_messages)):
-                    if (
-                        api_messages[j].get("role") == "tool"
-                        and api_messages[j].get("tool_call_id") == tc_id
-                    ):
-                        tool_result_str = api_messages[j].get("content", "")
-                        break
-
-                # Detect errors (run_loop prefixes errors with "Error")
-                is_error = bool(tool_result_str and tool_result_str.startswith("Error"))
-                tool_error = tool_result_str if is_error else None
-                tool_output = None if is_error else tool_result_str
-
-                # Get nested calls for subagent tools
-                nested_calls = []
-                if tool_name == "spawn_subagent" and web_ui_callback:
-                    nested_calls = web_ui_callback.get_and_clear_nested_calls()
-
-                tool_call_objects.append(
-                    ToolCallModel(
-                        id=tc_id,
-                        name=tool_name,
-                        parameters=tool_args,
-                        result=tool_result_str,
-                        result_summary=summarize_tool_result(
-                            tool_name, tool_output, tool_error
-                        ),
-                        error=tool_error,
-                        approved=True,
-                        nested_tool_calls=nested_calls,
-                    )
-                )
-
-            assistant_msg = ChatMessage(
-                role=Role.ASSISTANT,
-                content=content,
-                tool_calls=tool_call_objects,
-                thinking_trace=thinking_trace if is_first_assistant else None,
-                reasoning_content=reasoning_content if is_first_assistant else None,
-            )
-            session.add_message(assistant_msg)
-            is_first_assistant = False
-
-        # Fallback: if no assistant messages were found but we have content, save it
-        if is_first_assistant and original_content:
-            assistant_msg = ChatMessage(
-                role=Role.ASSISTANT,
-                content=original_content,
-                thinking_trace=thinking_trace,
-                reasoning_content=reasoning_content,
-                token_usage=token_usage,
-            )
-            session.add_message(assistant_msg)
-
-    def _run_thinking_phase(
-        self,
-        agent: Any,
-        message_history: list,
-        ws_manager: Any,
-        loop: asyncio.AbstractEventLoop,
-        thinking_level_str: str,
-        session_id: Optional[str] = None,
-    ) -> Optional[str]:
-        """Run pre-thinking phase and broadcast result via WebSocket.
-
-        Mirrors ReactExecutor._get_thinking_trace() from the TUI.
-        Uses the full conversation history with a swapped thinking system prompt.
-        """
-        from opendev.core.agents.prompts.reminders import get_reminder
-
-        try:
-            # Build thinking system prompt
-            thinking_system_prompt = agent.build_system_prompt(thinking_visible=True)
-
-            # Clone messages with swapped system prompt
-            thinking_messages = list(message_history)
-            if thinking_messages and thinking_messages[0].get("role") == "system":
-                thinking_messages[0] = {"role": "system", "content": thinking_system_prompt}
-            else:
-                thinking_messages.insert(0, {"role": "system", "content": thinking_system_prompt})
-
-            # Build analysis prompt — todo-aware when todos exist
-            todo_handler = getattr(
-                getattr(agent, "tool_registry", None), "todo_handler", None
-            )
-            if todo_handler and todo_handler.has_todos():
-                todos = list(todo_handler._todos.values())
-                done = sum(1 for t in todos if t.status == "done")
-                total = len(todos)
-                status_lines = []
-                for t in todos:
-                    symbol = {"done": "done", "doing": "doing"}.get(t.status, "todo")
-                    status_lines.append(f"  [{symbol}] {t.title}")
-                analysis_content = get_reminder(
-                    "thinking_analysis_prompt_with_todos",
-                    done_count=str(done),
-                    total_count=str(total),
-                    todo_status="\n".join(status_lines),
-                )
-            else:
-                analysis_content = get_reminder("thinking_analysis_prompt")
-
-            # Append analysis prompt as final user message
-            thinking_messages.append(
-                {
-                    "role": "user",
-                    "content": analysis_content,
-                },
-            )
-
-            response = agent.call_thinking_llm(thinking_messages)
-
-            if response.get("success"):
-                thinking_trace = response.get("content", "")
-                if thinking_trace and thinking_trace.strip():
-                    # Broadcast as thinking_block
-                    try:
-                        future = asyncio.run_coroutine_threadsafe(
-                            ws_manager.broadcast(
-                                {
-                                    "type": "thinking_block",
-                                    "data": {
-                                        "content": thinking_trace.strip(),
-                                        "level": thinking_level_str,
-                                        "session_id": session_id,
-                                    },
-                                }
-                            ),
-                            loop,
-                        )
-                        future.result(timeout=5)
-                    except Exception as e:
-                        logger.error(f"Failed to broadcast thinking_block: {e}")
-
-                    # Handle High level (includes self-critique)
-                    if thinking_level_str == "High":
-                        thinking_trace = self._run_critique_phase(
-                            agent, thinking_trace, message_history, ws_manager, loop,
-                            session_id=session_id,
-                        )
-
-                    return thinking_trace.strip()
-        except Exception as e:
-            logger.error(f"Thinking phase error: {e}")
-        return None
-
-    def _run_critique_phase(
-        self,
-        agent: Any,
-        thinking_trace: str,
-        message_history: list,
-        ws_manager: Any,
-        loop: asyncio.AbstractEventLoop,
-        session_id: Optional[str] = None,
-    ) -> str:
-        """Run critique phase (part of High level): critique and broadcast."""
-        try:
-            critique_response = agent.call_critique_llm(thinking_trace)
-            if critique_response.get("success"):
-                critique = critique_response.get("content", "")
-                if critique and critique.strip():
-                    # Broadcast critique block
-                    try:
-                        future = asyncio.run_coroutine_threadsafe(
-                            ws_manager.broadcast(
-                                {
-                                    "type": "thinking_block",
-                                    "data": {
-                                        "content": critique.strip(),
-                                        "level": "High",
-                                        "session_id": session_id,
-                                    },
-                                }
-                            ),
-                            loop,
-                        )
-                        future.result(timeout=5)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.error(f"Critique phase error: {e}")
-        return thinking_trace
+            logger.error(f"ReactExecutor error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"summary": None, "error": str(e), "latency_ms": 0}
 
     def _resolve_runtime_context_for_session(
         self, session: Any
