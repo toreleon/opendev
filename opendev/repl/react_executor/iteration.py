@@ -107,7 +107,9 @@ class IterationMixin:
         import time
 
         start = time.monotonic()
-        response = agent.call_llm(messages, task_monitor=task_monitor, thinking_visible=thinking_visible)
+        response = agent.call_llm(
+            messages, task_monitor=task_monitor, thinking_visible=thinking_visible
+        )
         latency = int((time.monotonic() - start) * 1000)
         return response, latency
 
@@ -147,14 +149,17 @@ class IterationMixin:
         self._check_interrupt("pre-thinking")
 
         # THINKING PHASE: Get thinking trace BEFORE action (when thinking mode is ON)
-        # Skip thinking phase after subagent completion - main agent decides directly
         # Skip thinking if previous iteration set skip_next_thinking (e.g., explore-first block)
         should_skip_thinking = ctx.skip_next_thinking
         ctx.skip_next_thinking = False
 
-        if thinking_visible and not subagent_just_completed and not should_skip_thinking:
+        if thinking_visible and not should_skip_thinking:
             thinking_trace = self._get_thinking_trace(
-                ctx.messages, ctx.agent, ctx.ui_callback, tool_registry=ctx.tool_registry
+                ctx.messages,
+                ctx.agent,
+                ctx.ui_callback,
+                tool_registry=ctx.tool_registry,
+                original_task=ctx.query,
             )
 
             # Check for interrupt from thinking phase (reuse existing _handle_llm_error)
@@ -235,9 +240,7 @@ class IterationMixin:
         response, latency_ms = self._call_action_llm(
             ctx.agent, ctx.messages, task_monitor, thinking_visible=thinking_visible
         )
-        debug_log(
-            "ReactExecutor", f"_call_action_llm returned, success={response.get('success')}"
-        )
+        debug_log("ReactExecutor", f"_call_action_llm returned, success={response.get('success')}")
         self._last_latency_ms = latency_ms
         _session_debug().log(
             "llm_call_end",
@@ -450,10 +453,16 @@ class IterationMixin:
                 self._display_message(content, ctx.ui_callback)
             return LoopAction.CONTINUE
 
-        # Nudge once for empty completion summary
-        if not content and not ctx.completion_nudge_sent:
+        # Before accepting implicit completion, remind of original task (once)
+        if not ctx.completion_nudge_sent:
             ctx.completion_nudge_sent = True
-            append_nudge(ctx.messages, get_reminder("completion_summary_nudge"))
+            if content:
+                ctx.messages.append({"role": "assistant", "content": raw_content or content})
+                self._display_message(content, ctx.ui_callback)
+            append_nudge(
+                ctx.messages,
+                get_reminder("implicit_completion_nudge", original_task=ctx.query),
+            )
             return LoopAction.CONTINUE
 
         # Accept completion (with or without content)
