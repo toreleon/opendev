@@ -160,6 +160,7 @@ class IterationMixin:
                 ctx.ui_callback,
                 tool_registry=ctx.tool_registry,
                 original_task=ctx.query,
+                plan_approved=ctx.plan_approved_signal_injected,
             )
 
             # Check for interrupt from thinking phase (reuse existing _handle_llm_error)
@@ -200,13 +201,26 @@ class IterationMixin:
         # CONTINUATION SIGNAL: After subagent completion, nudge agent to keep working
         # Skip if continue_after_subagent is True (e.g., caller handles post-subagent flow)
         if subagent_just_completed and not ctx.continue_after_subagent:
-            _debug_log("[ITERATION] Injecting stop signal after subagent completion")
-            ctx.messages.append(
-                {
-                    "role": "user",
-                    "content": get_reminder("subagent_complete_signal"),
-                }
-            )
+            if ctx.planner_pending:
+                _debug_log("[ITERATION] Injecting planner complete signal")
+                ctx.planner_pending = False
+                ctx.messages.append(
+                    {
+                        "role": "user",
+                        "content": get_reminder(
+                            "planner_complete_signal",
+                            plan_file_path=ctx.planner_plan_path,
+                        ),
+                    }
+                )
+            else:
+                _debug_log("[ITERATION] Injecting stop signal after subagent completion")
+                ctx.messages.append(
+                    {
+                        "role": "user",
+                        "content": get_reminder("subagent_complete_signal"),
+                    }
+                )
 
         # Drain any injected messages before action phase (EC4 — arrived during thinking)
         self._drain_injected_messages(ctx)

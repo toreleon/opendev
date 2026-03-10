@@ -91,6 +91,8 @@ class IterationContext:
     skip_next_thinking: bool = False
     continue_after_subagent: bool = False  # If True, don't inject stop signal after subagent
     has_explored: bool = False  # True after Code-Explorer has been spawned
+    planner_pending: bool = False  # True after Planner spawned, cleared after present_plan
+    planner_plan_path: str = ""  # Plan file path from Planner spawn args
     # Doom-loop detection: track recent (tool_name, args_hash) tuples
     recent_tool_calls: deque = field(default_factory=lambda: deque(maxlen=20))
     doom_loop_nudge_count: int = 0  # How many times we've auto-nudged

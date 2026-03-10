@@ -15,8 +15,10 @@ class TestParseSections:
         sections = _parse_sections()
         expected = [
             "thinking_analysis_prompt",
+            "thinking_analysis_prompt_plan_execution",
             "thinking_trace_reminder",
             "subagent_complete_signal",
+            "planner_complete_signal",
             "failed_tool_nudge",
             "nudge_permission_error",
             "nudge_file_not_found",
@@ -54,7 +56,7 @@ class TestParseSections:
         """Section names should be snake_case identifiers."""
         sections = _parse_sections()
         for name in sections:
-            assert re.match(r'^[a-z][a-z0-9_]*$', name), f"Invalid section name: {name!r}"
+            assert re.match(r"^[a-z][a-z0-9_]*$", name), f"Invalid section name: {name!r}"
 
 
 class TestGetReminder:
@@ -63,8 +65,9 @@ class TestGetReminder:
     # --- Simple lookups (no placeholders) ---
 
     def test_thinking_analysis_prompt(self):
-        result = get_reminder("thinking_analysis_prompt")
-        assert "Analyze the context" in result
+        result = get_reminder("thinking_analysis_prompt", original_task="test task")
+        assert "Analyze the full context" in result
+        assert "test task" in result
 
     def test_failed_tool_nudge(self):
         result = get_reminder("failed_tool_nudge")
@@ -126,7 +129,9 @@ class TestGetReminder:
         assert "DOCKER CONTAINER" in result
 
     def test_custom_agent_default(self):
-        result = get_reminder("generators/custom_agent_default", name="MyAgent", description="Does things")
+        result = get_reminder(
+            "generators/custom_agent_default", name="MyAgent", description="Does things"
+        )
         assert "MyAgent" in result
         assert "Does things" in result
 

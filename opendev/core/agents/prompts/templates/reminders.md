@@ -30,6 +30,11 @@ All subagents have completed. Evaluate ALL results together and continue:
 3. If the subagent failed or found nothing useful, handle the task directly. Do NOT re-spawn the same subagent.
 </subagent_complete>
 
+--- planner_complete_signal ---
+<planner_complete>
+The Planner has finished writing the plan. You MUST now call present_plan(plan_file_path="{plan_file_path}") to show it to the user for approval. Do NOT start implementing or reading files — the user must approve the plan first.
+</planner_complete>
+
 --- failed_tool_nudge ---
 The previous operation failed. Please fix the issue and try again, or call task_complete with status='failed' if you cannot proceed.
 

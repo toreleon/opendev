@@ -221,16 +221,19 @@ class ToolProcessingMixin:
                         ctx.skip_next_thinking = True
                         return LoopAction.CONTINUE
 
-        # Mark explored when Code-Explorer is being spawned
+        # Mark explored / planner spawned
         for tc in tool_calls:
             if tc["function"]["name"] == "spawn_subagent":
                 try:
                     args = json.loads(tc["function"]["arguments"])
                 except (json.JSONDecodeError, KeyError):
                     continue
-                if args.get("subagent_type", "") == "Code-Explorer":
+                subagent_type = args.get("subagent_type", "")
+                if subagent_type == "Code-Explorer":
                     ctx.has_explored = True
-                    break
+                elif subagent_type == "Planner":
+                    ctx.planner_pending = True
+                    ctx.planner_plan_path = args.get("plan_file_path", "")
 
         # Execute tools (parallel for spawn_subagent batches or read-only batches)
         spawn_calls = [tc for tc in tool_calls if tc["function"]["name"] == "spawn_subagent"]
