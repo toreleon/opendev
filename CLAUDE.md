@@ -4,35 +4,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Development Commands
 
+A `Makefile` is provided for common tasks. Run `make help` to see all targets.
+
 ```bash
-# Install with dev dependencies
-uv venv && uv pip install -e ".[dev]"
+make install      # Create venv and install with dev dependencies
+make format       # Format code with Black
+make lint         # Lint with Ruff (auto-fix)
+make typecheck    # Type-check with mypy
+make check        # Run format + lint + typecheck in sequence
+make test         # Run all tests
+make test-cov     # Run tests with coverage report
+make build-ui     # Build the web UI frontend
+make run          # Start interactive TUI
+make run-ui       # Start web UI
+```
+
+For cases not covered by `make`, the raw commands are:
+
+```bash
+# Activate the venv after install
 source .venv/bin/activate
 
-# Run the CLI
-opendev                    # Interactive TUI
-opendev -p "prompt"        # Non-interactive single prompt
-opendev --continue         # Resume most recent session
-opendev run ui             # Web UI
-
-# Code quality
-black opendev/ tests/ --line-length 100
-ruff check opendev/ tests/ --fix
-mypy opendev/
-
-# Tests
-uv run pytest                                    # All tests
+# Run specific tests
 uv run pytest tests/test_session_manager.py     # Single file
 uv run pytest tests/test_foo.py::test_bar       # Single test
-uv run pytest --cov=opendev                      # With coverage
 
-# Web UI (frontend build outputs to opendev/web/static/)
-cd web-ui && npm run build
+# Or via make
+make test-file FILE=tests/test_session_manager.py
 
 # MCP server management
 opendev mcp list
 opendev mcp add myserver uvx mcp-server-sqlite
 opendev mcp enable/disable myserver
+
+# CLI shortcuts
+opendev                    # Interactive TUI
+opendev -p "prompt"        # Non-interactive single prompt
+opendev --continue         # Resume most recent session
+opendev run ui             # Web UI
 ```
 
 ## Testing Requirements
@@ -50,10 +59,10 @@ Both unit tests AND end-to-end testing with real simulation are REQUIRED. Never 
 export OPENAI_API_KEY="your-key-here"
 
 # Run unit tests
-uv run pytest
+make test
 
 # Then run real end-to-end testing
-opendev
+make run
 # Execute real commands that exercise the changed code paths
 ```
 
@@ -61,7 +70,7 @@ opendev
 
 The CLI entry point is `opendev` (mapped to `opendev.cli:main`). The Python package is `opendev/`.
 
-```
+```text
 Entry Point (cli.py)
        |
 UI Layer

@@ -126,19 +126,20 @@ opendev mcp enable/disable myserver
 ```bash
 git clone https://github.com/opendev-to/opendev.git
 cd opendev
-uv venv && uv pip install -e ".[dev]"
+make install
 source .venv/bin/activate
+```
 
-# Run tests
-uv run pytest
+A `Makefile` provides shortcuts for all common tasks:
 
-# Code quality
-black opendev/ tests/ --line-length 100
-ruff check opendev/ tests/ --fix
-mypy opendev/
-
-# Build the Web UI frontend
-cd web-ui && npm run build
+```bash
+make check        # Format (Black) + lint (Ruff) + type-check (mypy)
+make test         # Run all tests
+make test-cov     # Run tests with coverage report
+make build-ui     # Build the Web UI frontend
+make run          # Start interactive TUI
+make run-ui       # Start web UI
+make help         # List all available targets
 ```
 
 ### Contributing
