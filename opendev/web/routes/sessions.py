@@ -49,6 +49,9 @@ async def create_session(
 ) -> Dict[str, Any]:
     """Create a new session with specified workspace.
 
+    Reuses an existing empty session for the same workspace if one exists,
+    preventing users from accumulating blank sessions.
+
     Args:
         request: Request containing workspace path
 
@@ -60,11 +63,50 @@ async def create_session(
     """
     try:
         state = get_state()
+        owner_id = str(user.id)
+        workspace = str(Path(request.workspace).expanduser().resolve())
 
-        # Create new session with specified workspace, owned by the current user
+        # Reuse an existing empty session for this workspace if one exists
+        existing_sessions = state.list_sessions(owner_id=owner_id)
+        empty_session = next(
+            (
+                s for s in existing_sessions
+                if s["message_count"] == 0
+                and str(Path(s["working_dir"]).expanduser().resolve()) == workspace
+            ),
+            None,
+        )
+
+        if empty_session:
+            # Guard against stale index: skip if this is the currently active session
+            # with in-memory messages (index may not reflect unsaved messages yet)
+            current = state.session_manager.get_current_session()
+            is_stale = (
+                current is not None
+                and current.id == empty_session["id"]
+                and len(current.messages) > 0
+            )
+            if not is_stale:
+                success = state.resume_session(empty_session["id"], owner_id=owner_id)
+                session = state.session_manager.get_current_session()
+                if success and session:
+                    return {
+                        "status": "success",
+                        "message": "Reusing existing empty session",
+                        "session": {
+                            "id": session.id,
+                            "working_dir": session.working_directory or "",
+                            "created_at": session.created_at.isoformat(),
+                            "updated_at": session.updated_at.isoformat(),
+                            "message_count": len(session.messages),
+                            "total_tokens": session.total_tokens(),
+                        },
+                    }
+
+        # No empty session found — create a new one
         state.session_manager.create_session(
-            working_directory=request.workspace,
-            owner_id=str(user.id),
+            working_directory=workspace,
+            owner_id=owner_id,
         )
 
         session = state.session_manager.get_current_session()

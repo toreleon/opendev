@@ -57,6 +57,11 @@ export function SessionsSidebar() {
   const isCollapsed = useChatStore(state => state.sidebarCollapsed);
   const toggleSidebar = useChatStore(state => state.toggleSidebar);
 
+  // Disable "New Chat" when the current session has no messages yet
+  const currentSessionIsEmpty = currentSessionId !== null && (
+    (sessionStates[currentSessionId]?.messages ?? []).length === 0
+  );
+
   useEffect(() => {
     fetchSessions();
   }, [sessionListVersion]);
@@ -335,11 +340,17 @@ export function SessionsSidebar() {
             {/* New Workspace Button (Collapsed) */}
             <button
               onClick={() => {
+                if (currentSessionIsEmpty) return;
                 toggleSidebar();
                 setTimeout(() => setIsNewSessionOpen(true), 100);
               }}
-              className="w-10 h-10 rounded-lg flex items-center justify-center bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-md hover:shadow-lg"
-              title="Start Conversation"
+              disabled={currentSessionIsEmpty}
+              className={`w-10 h-10 rounded-lg flex items-center justify-center text-white shadow-md transition-all ${
+                currentSessionIsEmpty
+                  ? 'bg-gray-300 cursor-not-allowed opacity-50'
+                  : 'bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 hover:shadow-lg'
+              }`}
+              title={currentSessionIsEmpty ? 'Send a message before starting a new session' : 'Start Conversation'}
             >
               <PlusIcon className="w-5 h-5" />
             </button>
@@ -361,8 +372,14 @@ export function SessionsSidebar() {
           {/* Compact New Chat Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
             <button
-              onClick={handleNewWorkspace}
-              className="flex-1 px-3 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-sm font-medium rounded-lg shadow-sm hover:shadow-md flex items-center justify-center gap-2 transition-all"
+              onClick={currentSessionIsEmpty ? undefined : handleNewWorkspace}
+              disabled={currentSessionIsEmpty}
+              title={currentSessionIsEmpty ? 'Send a message before starting a new session' : undefined}
+              className={`flex-1 px-3 py-2 text-sm font-medium rounded-lg flex items-center justify-center gap-2 transition-all ${
+                currentSessionIsEmpty
+                  ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-sm hover:shadow-md'
+              }`}
             >
               <PlusIcon className="w-4 h-4" />
               <span>New Chat</span>
@@ -473,8 +490,14 @@ export function SessionsSidebar() {
                         <div className="px-4 pb-3 space-y-1.5 border-t border-gray-100 pt-2">
                           {/* Add New Session Button */}
                           <button
-                            onClick={(e) => handleNewSessionInWorkspace(workspace.path, e)}
-                            className="w-full px-4 py-3 rounded-lg text-left cursor-pointer bg-amber-50/50 hover:bg-amber-50 border-2 border-dashed border-amber-300 hover:border-amber-400 flex items-center gap-2 text-amber-700"
+                            onClick={currentSessionIsEmpty ? undefined : (e) => handleNewSessionInWorkspace(workspace.path, e)}
+                            disabled={currentSessionIsEmpty}
+                            title={currentSessionIsEmpty ? 'Send a message before starting a new session' : undefined}
+                            className={`w-full px-4 py-3 rounded-lg text-left border-2 border-dashed flex items-center gap-2 ${
+                              currentSessionIsEmpty
+                                ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed'
+                                : 'cursor-pointer bg-amber-50/50 hover:bg-amber-50 border-amber-300 hover:border-amber-400 text-amber-700'
+                            }`}
                           >
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
