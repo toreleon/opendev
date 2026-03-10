@@ -103,6 +103,7 @@ class ReactExecutor(ThinkingMixin, ToolProcessingMixin, SessionPersistenceMixin,
     MAX_NUDGE_ATTEMPTS = 3
     MAX_TODO_NUDGES = 4  # After this many nudges, allow completion anyway
     DOOM_LOOP_THRESHOLD = 3  # Same tool+args N times -> doom loop
+    MAX_CYCLE_LEN = 3  # Check for repeating cycles up to this length
 
     # Tools safe for silent parallel execution (read-only, no approval needed)
     PARALLELIZABLE_TOOLS = frozenset(
@@ -293,7 +294,11 @@ class ReactExecutor(ThinkingMixin, ToolProcessingMixin, SessionPersistenceMixin,
         return f"{tool_name}:{h}"
 
     def _detect_doom_loop(self, tool_calls: list, ctx: IterationContext) -> Optional[str]:
-        """Check if the agent is stuck calling the same tool repeatedly.
+        """Check if the agent is stuck in a repeating cycle of tool calls.
+
+        Detects cycles of length 1..MAX_CYCLE_LEN repeated DOOM_LOOP_THRESHOLD times.
+        This avoids false positives for edit-test interleaving where the test command
+        repeats but edits differ.
 
         Returns a warning message if a doom loop is detected, None otherwise.
         """
@@ -301,17 +306,34 @@ class ReactExecutor(ThinkingMixin, ToolProcessingMixin, SessionPersistenceMixin,
             fp = self._tool_call_fingerprint(tc["function"]["name"], tc["function"]["arguments"])
             ctx.recent_tool_calls.append(fp)
 
-        # Count recent occurrences of each fingerprint
-        from collections import Counter
+        tail = list(ctx.recent_tool_calls)
 
-        counts = Counter(ctx.recent_tool_calls)
-        for fp, count in counts.items():
-            if count >= self.DOOM_LOOP_THRESHOLD:
-                tool_name = fp.split(":")[0]
-                return (
-                    f"The agent has called `{tool_name}` with the same arguments "
-                    f"{count} times. It may be stuck in a loop."
-                )
+        for cycle_len in range(1, self.MAX_CYCLE_LEN + 1):
+            required = cycle_len * self.DOOM_LOOP_THRESHOLD
+            if len(tail) < required:
+                continue
+
+            # Extract the last `required` entries and check for a repeating pattern
+            segment = tail[-required:]
+            pattern = segment[:cycle_len]
+            is_cycle = all(segment[i] == pattern[i % cycle_len] for i in range(required))
+
+            if is_cycle:
+                if cycle_len == 1:
+                    tool_name = pattern[0].split(":")[0]
+                    return (
+                        f"The agent has called `{tool_name}` with the same arguments "
+                        f"{self.DOOM_LOOP_THRESHOLD} times consecutively. "
+                        f"It may be stuck in a loop."
+                    )
+                else:
+                    tool_names = [p.split(":")[0] for p in pattern]
+                    return (
+                        f"The agent is repeating a {cycle_len}-step cycle "
+                        f"({' -> '.join(tool_names)}) "
+                        f"{self.DOOM_LOOP_THRESHOLD} times. "
+                        f"It may be stuck in a loop."
+                    )
         return None
 
     def execute(
