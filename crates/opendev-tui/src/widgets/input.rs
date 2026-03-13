@@ -37,8 +37,6 @@ impl Widget for InputWidget<'_> {
 
         let accent = if self.mode == "PLAN" {
             style_tokens::GREEN_LIGHT
-        } else if self.agent_active {
-            style_tokens::GOLD
         } else {
             style_tokens::ACCENT
         };
