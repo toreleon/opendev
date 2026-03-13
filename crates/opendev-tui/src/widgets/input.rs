@@ -47,13 +47,32 @@ impl Widget for InputWidget<'_> {
             "Type a message..."
         };
 
-        // Row 0: thin separator line
-        let sep_style = Style::default().fg(accent);
-        for x in area.left()..area.right() {
-            buf[(x, area.top())].set_symbol("─").set_style(sep_style);
-        }
+        // Row 0: separator line with embedded mode indicator
+        // e.g. "── Normal (Shift+Tab) ──────────"
+        let mode_label = match self.mode {
+            "NORMAL" => "Normal",
+            "PLAN" => "Plan",
+            other => other,
+        };
+        let mode_text = format!(" {mode_label} ");
+        let hint_text = "(Shift+Tab) ";
+        let prefix_dashes = 2; // "── " before mode label
+        let used = prefix_dashes + mode_text.len() + hint_text.len();
+        let remaining_dashes = (area.width as usize).saturating_sub(used);
 
-        // Row 1: mode prefix + input text
+        let sep_style = Style::default().fg(accent);
+        let sep_line = Line::from(vec![
+            Span::styled("── ", sep_style),
+            Span::styled(
+                mode_text,
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(hint_text, Style::default().fg(style_tokens::GREY)),
+            Span::styled("─".repeat(remaining_dashes), sep_style),
+        ]);
+        buf.set_line(area.left(), area.top(), &sep_line, area.width);
+
+        // Row 1: "> " prefix + input text
         let text_area = Rect {
             x: area.x,
             y: area.y + 1,
@@ -62,7 +81,7 @@ impl Widget for InputWidget<'_> {
         };
 
         let prefix = Span::styled(
-            format!(" {} > ", self.mode),
+            "> ".to_string(),
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
         );
 

@@ -9,7 +9,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Paragraph, Widget, Wrap},
+    widgets::{Paragraph, Widget, Wrap},
 };
 
 use crate::app::{DisplayMessage, DisplayRole, DisplayToolCall};
@@ -281,19 +281,8 @@ fn format_nested_tool_call(tc: &DisplayToolCall, depth: usize) -> Line<'static> 
 
 impl Widget for ConversationWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(style_tokens::BORDER))
-            .title(Span::styled(
-                " OpenDev ",
-                Style::default()
-                    .fg(style_tokens::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ));
-
         let lines = self.build_lines();
         let paragraph = Paragraph::new(lines)
-            .block(block)
             .wrap(Wrap { trim: false })
             .scroll((self.scroll_offset, 0));
 

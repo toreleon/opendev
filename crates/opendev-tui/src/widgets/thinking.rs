@@ -59,7 +59,7 @@ pub fn render_thinking_block(block: &ThinkingBlock) -> Vec<Line<'static>> {
     };
     lines.push(Line::from(vec![
         Span::styled(
-            format!("  {collapse_indicator} "),
+            format!("{collapse_indicator} "),
             Style::default().fg(style_tokens::GREY),
         ),
         Span::styled(
@@ -75,7 +75,7 @@ pub fn render_thinking_block(block: &ThinkingBlock) -> Vec<Line<'static>> {
         for content_line in block.content.lines() {
             lines.push(Line::from(vec![
                 Span::styled(
-                    "    ".to_string(),
+                    "  ".to_string(),
                     Style::default().fg(style_tokens::THINKING_BG),
                 ),
                 Span::styled(

@@ -116,30 +116,6 @@ impl Widget for StatusBarWidget<'_> {
 
         let mut spans: Vec<Span> = Vec::new();
 
-        // Mode indicator with hint
-        let (mode_label, mode_color) = match self.mode {
-            OperationMode::Normal => ("NORMAL", style_tokens::ORANGE),
-            OperationMode::Plan => ("PLAN", style_tokens::GREEN_LIGHT),
-        };
-        spans.push(Span::styled(
-            "Mode: ",
-            Style::default().fg(style_tokens::GREY),
-        ));
-        spans.push(Span::styled(
-            mode_label,
-            Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            " (Shift+Tab)",
-            Style::default().fg(style_tokens::GREY),
-        ));
-
-        // Separator
-        spans.push(Span::styled(
-            "  \u{2502}  ", // │
-            Style::default().fg(style_tokens::GREY),
-        ));
-
         // Autonomy level
         let autonomy_color = match self.autonomy {
             AutonomyLevel::Manual => style_tokens::ORANGE_CAUTION,
