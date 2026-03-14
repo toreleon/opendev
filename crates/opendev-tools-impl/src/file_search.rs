@@ -1,11 +1,149 @@
 //! Search file contents tool — delegates to ripgrep (`rg`) for fast content search.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
 use tokio::process::Command;
+
+/// Default directories to exclude from search and file listing.
+/// Covers 20+ programming languages and ecosystems.
+/// Ripgrep already respects `.gitignore`, but these act as a safety net
+/// for repos without gitignore or for directories not tracked by git.
+pub const DEFAULT_SEARCH_EXCLUDES: &[&str] = &[
+    // Package/Dependency Directories
+    "node_modules",
+    "bower_components",
+    "jspm_packages",
+    "vendor",
+    "Pods",
+    ".bundle",
+    "packages",
+    ".pub-cache",
+    ".pub",
+    "deps",
+    ".nuget",
+    ".m2",
+    // Virtual Environments
+    ".venv",
+    "venv",
+    ".virtualenvs",
+    ".conda",
+    // Build Output Directories
+    "build",
+    "dist",
+    "out",
+    "target",
+    "bin",
+    "obj",
+    "lib",
+    "_build",
+    "ebin",
+    "dist-newstyle",
+    ".build",
+    "DerivedData",
+    "CMakeFiles",
+    ".cmake",
+    // Framework-Specific Build
+    ".next",
+    ".nuxt",
+    ".angular",
+    ".svelte-kit",
+    ".vuepress",
+    ".gatsby-cache",
+    ".parcel-cache",
+    ".turbo",
+    "dist_electron",
+    // Cache Directories
+    ".cache",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".hypothesis",
+    ".tox",
+    ".nox",
+    ".eslintcache",
+    ".stylelintcache",
+    ".gradle",
+    ".dart_tool",
+    ".mix",
+    ".cpcache",
+    ".lsp",
+    // IDE/Editor Directories
+    ".idea",
+    ".vscode",
+    ".vscode-test",
+    ".vs",
+    ".metadata",
+    ".settings",
+    "xcuserdata",
+    ".netbeans",
+    // Version Control
+    ".git",
+    ".svn",
+    ".hg",
+    // Coverage/Testing Output
+    "coverage",
+    "htmlcov",
+    ".nyc_output",
+    // Language-Specific Metadata
+    ".eggs",
+    ".Rproj.user",
+    ".julia",
+    "_opam",
+    ".cabal-sandbox",
+    ".stack-work",
+    "blib",
+];
+
+/// File glob patterns to exclude (matched by extension/suffix).
+pub const DEFAULT_SEARCH_EXCLUDE_GLOBS: &[&str] = &[
+    "*.min.js",
+    "*.min.css",
+    "*.bundle.js",
+    "*.chunk.js",
+    "*.map",
+    "*.pyc",
+    "*.pyo",
+    "*.class",
+    "*.o",
+    "*.so",
+    "*.dylib",
+    "*.dll",
+    "*.exe",
+    "*.beam",
+    "*.hi",
+    "*.dyn_hi",
+    "*.dyn_o",
+    "*.egg-info",
+];
+
+/// Returns the path to a cached ignore file containing default exclusions.
+/// The file is created once on first call and reused for all subsequent searches.
+pub fn default_ignore_file() -> Option<&'static PathBuf> {
+    static IGNORE_FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    IGNORE_FILE
+        .get_or_init(|| {
+            let mut content = String::new();
+            for dir in DEFAULT_SEARCH_EXCLUDES {
+                content.push_str(dir);
+                content.push('/');
+                content.push('\n');
+            }
+            for glob_pat in DEFAULT_SEARCH_EXCLUDE_GLOBS {
+                content.push_str(glob_pat);
+                content.push('\n');
+            }
+            // Write to a temp file that persists for the process lifetime
+            let path = std::env::temp_dir().join("opendev-search-excludes.ignore");
+            std::fs::write(&path, &content).ok()?;
+            Some(path)
+        })
+        .as_ref()
+}
 
 /// Tool for searching file contents using ripgrep.
 #[derive(Debug)]
@@ -75,6 +213,14 @@ impl FileSearchTool {
         if let Some(ref file_type) = args.file_type {
             cmd.arg("--type");
             cmd.arg(file_type);
+        }
+
+        // Default exclusions via ignore file (safety net — rg already respects .gitignore).
+        // Uses --ignore-file because rg's --glob override set treats negation-only
+        // patterns as "exclude everything", while ignore files work correctly.
+        if let Some(ignore_file) = default_ignore_file() {
+            cmd.arg("--ignore-file");
+            cmd.arg(ignore_file);
         }
 
         // Pattern and path
@@ -677,6 +823,90 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect()
+    }
+
+    // --- Unit tests for default exclusions ---
+
+    #[test]
+    fn test_build_rg_command_includes_ignore_file() {
+        let args =
+            SearchArgs::from_map(&make_args(&[("pattern", serde_json::json!("hello"))])).unwrap();
+        let cmd = FileSearchTool::build_rg_command(&args, Path::new("/tmp"));
+        let cmd_args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+
+        // Verify --ignore-file is present
+        assert!(
+            cmd_args.contains(&"--ignore-file".to_string()),
+            "should include --ignore-file flag"
+        );
+    }
+
+    #[test]
+    fn test_default_ignore_file_contents() {
+        let path = default_ignore_file().expect("should create ignore file");
+        let content = fs::read_to_string(path).unwrap();
+        assert!(
+            content.contains("node_modules/"),
+            "should contain node_modules/"
+        );
+        assert!(
+            content.contains("__pycache__/"),
+            "should contain __pycache__/"
+        );
+        assert!(content.contains(".git/"), "should contain .git/");
+        assert!(content.contains("target/"), "should contain target/");
+        assert!(content.contains("*.min.js"), "should contain *.min.js");
+        assert!(content.contains("*.pyc"), "should contain *.pyc");
+    }
+
+    #[test]
+    fn test_default_exclusion_lists_not_empty() {
+        assert!(!DEFAULT_SEARCH_EXCLUDES.is_empty());
+        assert!(!DEFAULT_SEARCH_EXCLUDE_GLOBS.is_empty());
+        // Sanity: all directory entries are non-empty
+        for entry in DEFAULT_SEARCH_EXCLUDES {
+            assert!(!entry.is_empty());
+        }
+        // All glob patterns start with '*'
+        for pat in DEFAULT_SEARCH_EXCLUDE_GLOBS {
+            assert!(
+                pat.starts_with('*'),
+                "glob pattern should start with '*': {pat}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_excludes_node_modules() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::create_dir_all(tmp.path().join("node_modules/pkg")).unwrap();
+        fs::write(tmp.path().join("src/main.rs"), "fn hello() {}").unwrap();
+        fs::write(
+            tmp.path().join("node_modules/pkg/index.js"),
+            "function hello() {}",
+        )
+        .unwrap();
+
+        let tool = FileSearchTool;
+        let ctx = ToolContext::new(tmp.path());
+        let args = make_args(&[("pattern", serde_json::json!("hello"))]);
+
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.success);
+        let output = result.output.unwrap_or_default();
+        assert!(
+            output.contains("main.rs"),
+            "should find hello in src/main.rs"
+        );
+        assert!(
+            !output.contains("node_modules"),
+            "should not search node_modules, got: {output}"
+        );
     }
 
     // --- Unit tests for argument parsing ---

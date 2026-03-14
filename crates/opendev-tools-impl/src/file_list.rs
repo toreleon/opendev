@@ -5,6 +5,31 @@ use std::path::Path;
 
 use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
 
+use crate::file_search::{DEFAULT_SEARCH_EXCLUDE_GLOBS, DEFAULT_SEARCH_EXCLUDES};
+
+/// Check if a path should be excluded based on default exclusion patterns.
+fn is_excluded_path(path: &Path) -> bool {
+    for component in path.components() {
+        let name = component.as_os_str().to_string_lossy();
+        if DEFAULT_SEARCH_EXCLUDES.contains(&name.as_ref()) {
+            return true;
+        }
+    }
+    // Check file glob patterns (e.g., *.min.js)
+    if let Some(file_name) = path.file_name() {
+        let name = file_name.to_string_lossy();
+        for glob_pat in DEFAULT_SEARCH_EXCLUDE_GLOBS {
+            // Patterns are like "*.min.js" — check suffix after first '*'
+            if let Some(suffix) = glob_pat.strip_prefix('*')
+                && name.ends_with(suffix)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Tool for listing files using glob patterns.
 #[derive(Debug)]
 pub struct FileListTool;
@@ -98,6 +123,12 @@ impl BaseTool for FileListTool {
             match entry {
                 Ok(path) => {
                     if path.is_file() {
+                        // Filter out excluded directories and file patterns
+                        if let Ok(rel) = path.strip_prefix(&base_dir)
+                            && is_excluded_path(rel)
+                        {
+                            continue;
+                        }
                         // Apply max_depth filter: count components relative to base_dir
                         if let Some(depth) = max_depth
                             && let Ok(rel) = path.strip_prefix(&base_dir)
@@ -253,6 +284,94 @@ mod tests {
         assert!(output.contains("mid.rs"));
         assert!(output.contains("deep.rs"));
         assert!(output.contains("deeper.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_list_files_excludes_node_modules() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::create_dir_all(tmp.path().join("node_modules/foo")).unwrap();
+        fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(
+            tmp.path().join("node_modules/foo/index.js"),
+            "module.exports = {}",
+        )
+        .unwrap();
+
+        let tool = FileListTool;
+        let ctx = ToolContext::new(tmp.path());
+        let args = make_args(&[("pattern", serde_json::json!("**/*"))]);
+
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.success);
+        let output = result.output.unwrap();
+        assert!(output.contains("main.rs"));
+        assert!(
+            !output.contains("index.js"),
+            "node_modules should be excluded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_files_excludes_build_dirs() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::create_dir_all(tmp.path().join("target/debug")).unwrap();
+        fs::create_dir_all(tmp.path().join("__pycache__")).unwrap();
+        fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+        fs::write(tmp.path().join("target/debug/output"), "").unwrap();
+        fs::write(tmp.path().join("__pycache__/mod.pyc"), "").unwrap();
+
+        let tool = FileListTool;
+        let ctx = ToolContext::new(tmp.path());
+        let args = make_args(&[("pattern", serde_json::json!("**/*"))]);
+
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.success);
+        let output = result.output.unwrap();
+        assert!(output.contains("lib.rs"));
+        assert!(!output.contains("output"), "target/ should be excluded");
+        assert!(
+            !output.contains("mod.pyc"),
+            "__pycache__/ should be excluded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_files_excludes_minified_files() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("app.js"), "").unwrap();
+        fs::write(tmp.path().join("app.min.js"), "").unwrap();
+        fs::write(tmp.path().join("style.min.css"), "").unwrap();
+
+        let tool = FileListTool;
+        let ctx = ToolContext::new(tmp.path());
+        let args = make_args(&[("pattern", serde_json::json!("*"))]);
+
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.success);
+        let output = result.output.unwrap();
+        assert!(output.contains("app.js"));
+        assert!(
+            !output.contains("app.min.js"),
+            "*.min.js should be excluded"
+        );
+        assert!(
+            !output.contains("style.min.css"),
+            "*.min.css should be excluded"
+        );
+    }
+
+    #[test]
+    fn test_is_excluded_path() {
+        assert!(is_excluded_path(Path::new("node_modules/foo/bar.js")));
+        assert!(is_excluded_path(Path::new("src/vendor/lib.go")));
+        assert!(is_excluded_path(Path::new(".git/HEAD")));
+        assert!(is_excluded_path(Path::new("dist/bundle.js")));
+        assert!(is_excluded_path(Path::new("app.min.js")));
+        assert!(is_excluded_path(Path::new("style.min.css")));
+        assert!(!is_excluded_path(Path::new("src/main.rs")));
+        assert!(!is_excluded_path(Path::new("lib.rs")));
     }
 
     #[tokio::test]
