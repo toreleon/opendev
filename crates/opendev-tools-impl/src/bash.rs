@@ -758,12 +758,9 @@ impl BaseTool for BashTool {
 
         // Resolve working directory: use `workdir` param if provided, else ctx.working_dir
         let working_dir = if let Some(wd) = args.get("workdir").and_then(|v| v.as_str()) {
-            let path = std::path::PathBuf::from(wd);
-            if !path.is_absolute() {
-                return ToolResult::fail(format!("workdir must be an absolute path, got: {wd}"));
-            }
+            let path = crate::path_utils::resolve_dir_path(wd, &ctx.working_dir);
             if !path.exists() {
-                return ToolResult::fail(format!("workdir path does not exist: {wd}"));
+                return ToolResult::fail(format!("workdir path does not exist: {}", path.display()));
             }
             path
         } else {
@@ -1293,16 +1290,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_workdir_relative_path_rejected() {
+    async fn test_workdir_relative_path_resolved() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let canonical = tmp.path().canonicalize().unwrap();
+        let subdir = canonical.join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(subdir.join("marker.txt"), "found-it").unwrap();
+
         let tool = BashTool::new();
-        let ctx = ToolContext::new("/tmp");
+        let ctx = ToolContext::new(&canonical);
         let args = make_args(&[
-            ("command", serde_json::json!("echo hello")),
-            ("workdir", serde_json::json!("relative/path")),
+            ("command", serde_json::json!("cat marker.txt")),
+            ("workdir", serde_json::json!("subdir")),
         ]);
         let result = tool.execute(args, &ctx).await;
-        assert!(!result.success);
-        assert!(result.error.unwrap().contains("absolute path"));
+        assert!(result.success);
+        assert!(result.output.unwrap().contains("found-it"));
     }
 
     #[tokio::test]
