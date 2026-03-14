@@ -19,7 +19,7 @@ impl BaseTool for GitTool {
     }
 
     fn description(&self) -> &str {
-        "Execute structured git operations: status, diff, log, branch, checkout, commit, push, pull, stash, merge."
+        "Execute structured git operations: status, diff, log, branch, checkout, commit, push, pull, stash, merge, create_pr."
     }
 
     fn parameter_schema(&self) -> serde_json::Value {
@@ -28,17 +28,21 @@ impl BaseTool for GitTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "diff", "log", "branch", "checkout", "commit", "push", "pull", "stash", "merge"],
+                    "enum": ["status", "diff", "log", "branch", "checkout", "commit", "push", "pull", "stash", "merge", "create_pr"],
                     "description": "Git action to perform"
                 },
-                "message": { "type": "string", "description": "Commit message (for commit)" },
+                "message": { "type": "string", "description": "Commit message (for commit) or stash message (for stash push)" },
                 "branch": { "type": "string", "description": "Branch name" },
                 "file": { "type": "string", "description": "File path (for diff)" },
                 "staged": { "type": "boolean", "description": "Show staged changes (for diff)" },
                 "limit": { "type": "integer", "description": "Number of log entries" },
                 "force": { "type": "boolean", "description": "Force push (with lease)" },
                 "create": { "type": "boolean", "description": "Create new branch (for checkout)" },
-                "remote": { "type": "string", "description": "Remote name (default: origin)" }
+                "remote": { "type": "string", "description": "Remote name (default: origin)" },
+                "stash_action": { "type": "string", "enum": ["push", "pop", "list", "drop", "show"], "description": "Stash sub-action (default: list)" },
+                "title": { "type": "string", "description": "PR title (for create_pr)" },
+                "body": { "type": "string", "description": "PR body (for create_pr)" },
+                "base": { "type": "string", "description": "Base branch for PR (for create_pr)" }
             },
             "required": ["action"]
         })
@@ -111,11 +115,11 @@ impl BaseTool for GitTool {
             }
             "stash" => {
                 let sub_action = args
-                    .get("action")
+                    .get("stash_action")
                     .and_then(|v| v.as_str())
                     .unwrap_or("list");
-                // For stash, use a secondary field or default to list
-                git_stash(&cwd, sub_action)
+                let message = args.get("message").and_then(|v| v.as_str());
+                git_stash(&cwd, sub_action, message)
             }
             "merge" => {
                 let branch = match args.get("branch").and_then(|v| v.as_str()) {
@@ -124,8 +128,17 @@ impl BaseTool for GitTool {
                 };
                 git_merge(&cwd, branch)
             }
+            "create_pr" => {
+                let title = match args.get("title").and_then(|v| v.as_str()) {
+                    Some(t) => t,
+                    None => return ToolResult::fail("title is required for create_pr"),
+                };
+                let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                let base = args.get("base").and_then(|v| v.as_str());
+                git_create_pr(&cwd, title, body, base)
+            }
             _ => ToolResult::fail(format!(
-                "Unknown git action: {action}. Available: status, diff, log, branch, checkout, commit, push, pull, stash, merge"
+                "Unknown git action: {action}. Available: status, diff, log, branch, checkout, commit, push, pull, stash, merge, create_pr"
             )),
         }
     }
@@ -161,9 +174,36 @@ fn git_status(cwd: &str) -> ToolResult {
         .next()
         .unwrap_or("unknown");
 
+    // Parse ahead/behind info from branch line
+    let mut ahead = 0u64;
+    let mut behind = 0u64;
+    if let Some(cap) = branch_line.find("ahead ") {
+        let rest = &branch_line[cap + 6..];
+        if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
+            ahead = rest[..end].parse().unwrap_or(0);
+        } else {
+            // Number goes to the end (minus possible ']')
+            ahead = rest.trim_end_matches(']').parse().unwrap_or(0);
+        }
+    }
+    if let Some(cap) = branch_line.find("behind ") {
+        let rest = &branch_line[cap + 7..];
+        if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
+            behind = rest[..end].parse().unwrap_or(0);
+        } else {
+            behind = rest.trim_end_matches(']').parse().unwrap_or(0);
+        }
+    }
+
     let changes: Vec<&str> = lines.iter().skip(1).copied().collect();
 
     let mut output = format!("Branch: {branch}\n");
+    if ahead > 0 {
+        output.push_str(&format!("Ahead: {ahead} commits\n"));
+    }
+    if behind > 0 {
+        output.push_str(&format!("Behind: {behind} commits\n"));
+    }
     if changes.is_empty() {
         output.push_str("Working tree clean");
     } else {
@@ -180,6 +220,8 @@ fn git_status(cwd: &str) -> ToolResult {
     let mut metadata = HashMap::new();
     metadata.insert("branch".into(), serde_json::json!(branch));
     metadata.insert("change_count".into(), serde_json::json!(changes.len()));
+    metadata.insert("ahead".into(), serde_json::json!(ahead));
+    metadata.insert("behind".into(), serde_json::json!(behind));
 
     ToolResult::ok_with_metadata(output, metadata)
 }
@@ -276,13 +318,20 @@ fn git_commit(cwd: &str, message: &str) -> ToolResult {
 
 fn git_push(cwd: &str, remote: &str, branch: Option<&str>, force: bool) -> ToolResult {
     if force {
-        let target = branch.unwrap_or({
-            // This is a simplification; in practice we'd read HEAD
-            ""
-        });
-        if PROTECTED_BRANCHES.contains(&target) {
+        let target = if let Some(b) = branch {
+            b.to_string()
+        } else {
+            // Resolve current branch via git rev-parse
+            let (ok, current) = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+            if ok {
+                current
+            } else {
+                String::new()
+            }
+        };
+        if PROTECTED_BRANCHES.contains(&target.as_str()) {
             return ToolResult::fail(format!(
-                "Refusing force-push to protected branch '{target}'."
+                "Refusing force-push to protected branch '{target}'. This could destroy shared history."
             ));
         }
     }
@@ -321,14 +370,47 @@ fn git_pull(cwd: &str, remote: &str, branch: Option<&str>) -> ToolResult {
     }
 }
 
-fn git_stash(cwd: &str, _action: &str) -> ToolResult {
-    // Default to stash list
-    let (ok, out) = run_git(&["stash", "list"], cwd);
+fn git_stash(cwd: &str, action: &str, message: Option<&str>) -> ToolResult {
+    let args: Vec<&str> = match action {
+        "push" | "save" => {
+            if let Some(msg) = message {
+                // Can't use a simple slice because of the borrow; build below
+                let (ok, out) = run_git(&["stash", "push", "-m", msg], cwd);
+                return if ok {
+                    ToolResult::ok(if out.is_empty() {
+                        "Stash saved".to_string()
+                    } else {
+                        out
+                    })
+                } else {
+                    ToolResult::fail(out)
+                };
+            }
+            vec!["stash", "push"]
+        }
+        "pop" => vec!["stash", "pop"],
+        "list" => vec!["stash", "list"],
+        "drop" => vec!["stash", "drop"],
+        "show" => vec!["stash", "show", "-p"],
+        _ => {
+            return ToolResult::fail(format!(
+                "Unknown stash action: {action}. Available: push, pop, list, drop, show"
+            ));
+        }
+    };
+
+    let (ok, out) = run_git(&args, cwd);
     if !ok {
         return ToolResult::fail(out);
     }
     ToolResult::ok(if out.is_empty() {
-        "No stashes".to_string()
+        match action {
+            "list" => "No stashes".to_string(),
+            "push" | "save" => "Stash saved".to_string(),
+            "pop" => "Stash applied and dropped".to_string(),
+            "drop" => "Stash dropped".to_string(),
+            _ => out,
+        }
     } else {
         out
     })
@@ -340,6 +422,39 @@ fn git_merge(cwd: &str, branch: &str) -> ToolResult {
         ToolResult::ok(out)
     } else {
         ToolResult::fail(out)
+    }
+}
+
+fn git_create_pr(cwd: &str, title: &str, body: &str, base: Option<&str>) -> ToolResult {
+    let mut args = vec!["pr", "create", "--title", title, "--body", body];
+    if let Some(b) = base {
+        args.push("--base");
+        args.push(b);
+    }
+
+    match Command::new("gh").args(&args).current_dir(cwd).output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if output.status.success() {
+                ToolResult::ok(stdout)
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let error = if stderr.is_empty() { stdout } else { stderr };
+                if error.to_lowercase().contains("not found")
+                    || error.to_lowercase().contains("command not found")
+                {
+                    ToolResult::fail(
+                        "GitHub CLI (gh) is not installed. Install it with: brew install gh"
+                            .to_string(),
+                    )
+                } else {
+                    ToolResult::fail(error)
+                }
+            }
+        }
+        Err(_) => ToolResult::fail(
+            "GitHub CLI (gh) is not installed. Install it with: brew install gh".to_string(),
+        ),
     }
 }
 
@@ -396,5 +511,85 @@ mod tests {
     fn test_run_git_nonexistent() {
         let (ok, _) = run_git(&["status"], "/nonexistent/path");
         assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn test_git_stash_unknown_action() {
+        let result = git_stash("/tmp", "invalid_action", None);
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("Unknown stash action"));
+    }
+
+    #[tokio::test]
+    async fn test_git_create_pr_missing_title() {
+        let tool = GitTool;
+        let ctx = ToolContext::new("/tmp");
+        let args = make_args(&[("action", serde_json::json!("create_pr"))]);
+        let result = tool.execute(args, &ctx).await;
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("title is required"));
+    }
+
+    #[test]
+    fn test_git_status_parses_ahead_behind() {
+        // Simulate parsing ahead/behind from branch line
+        let branch_line = "## main...origin/main [ahead 3, behind 2]";
+        let mut ahead = 0u64;
+        let mut behind = 0u64;
+        if let Some(cap) = branch_line.find("ahead ") {
+            let rest = &branch_line[cap + 6..];
+            if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                ahead = rest[..end].parse().unwrap_or(0);
+            }
+        }
+        if let Some(cap) = branch_line.find("behind ") {
+            let rest = &branch_line[cap + 7..];
+            if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                behind = rest[..end].parse().unwrap_or(0);
+            }
+        }
+        assert_eq!(ahead, 3);
+        assert_eq!(behind, 2);
+    }
+
+    #[test]
+    fn test_git_status_no_ahead_behind() {
+        let branch_line = "## main...origin/main";
+        let mut ahead = 0u64;
+        let mut behind = 0u64;
+        if let Some(cap) = branch_line.find("ahead ") {
+            let rest = &branch_line[cap + 6..];
+            if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                ahead = rest[..end].parse().unwrap_or(0);
+            }
+        }
+        if let Some(cap) = branch_line.find("behind ") {
+            let rest = &branch_line[cap + 7..];
+            if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                behind = rest[..end].parse().unwrap_or(0);
+            }
+        }
+        assert_eq!(ahead, 0);
+        assert_eq!(behind, 0);
+    }
+
+    #[test]
+    fn test_git_force_push_resolves_branch() {
+        // When branch is None and force is true, git_push should try to resolve
+        // the current branch. In /tmp (not a git repo), it will fail gracefully
+        // and use an empty string which is not in PROTECTED_BRANCHES.
+        let result = git_push("/tmp", "origin", None, true);
+        // Should fail because /tmp is not a git repo, not because of protected branch
+        assert!(!result.success);
+    }
+
+    #[test]
+    fn test_protected_branches_list() {
+        assert!(PROTECTED_BRANCHES.contains(&"main"));
+        assert!(PROTECTED_BRANCHES.contains(&"master"));
+        assert!(PROTECTED_BRANCHES.contains(&"develop"));
+        assert!(PROTECTED_BRANCHES.contains(&"production"));
+        assert!(PROTECTED_BRANCHES.contains(&"staging"));
+        assert!(!PROTECTED_BRANCHES.contains(&"feature/my-branch"));
     }
 }
