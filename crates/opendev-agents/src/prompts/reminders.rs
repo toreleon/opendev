@@ -64,16 +64,62 @@ pub fn get_reminder(name: &str, vars: &[(&str, &str)]) -> String {
     result
 }
 
-/// Append a system nudge message to the conversation history.
+/// Classification of injected system messages.
 ///
-/// The message is tagged with `_nudge: true` so it can be identified as
-/// an injected nudge rather than a real user message.
-pub fn append_nudge(messages: &mut Vec<serde_json::Value>, content: &str) {
+/// Controls which models see the message during payload construction:
+/// - `Directive`: reaches both thinking and action models (error context, strategy changes)
+/// - `Nudge`: reaches action model only (behavioral guardrails)
+/// - `Internal`: stripped from all LLM calls (raw diagnostics, debug info)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageClass {
+    /// Error context and strategy changes — reaches both thinking and action models.
+    Directive,
+    /// Behavioral guardrails (todo enforcement, completion checks) — action model only.
+    Nudge,
+    /// Raw diagnostics and debug info — stripped from all LLM calls.
+    Internal,
+}
+
+impl MessageClass {
+    /// Returns the string tag stored in the `_msg_class` JSON field.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessageClass::Directive => "directive",
+            MessageClass::Nudge => "nudge",
+            MessageClass::Internal => "internal",
+        }
+    }
+}
+
+/// Inject a classified system message into the conversation history.
+///
+/// All system-injected messages should go through this function to ensure
+/// consistent tagging via `_msg_class`.
+pub fn inject_system_message(
+    messages: &mut Vec<serde_json::Value>,
+    content: &str,
+    class: MessageClass,
+) {
     messages.push(serde_json::json!({
         "role": "user",
         "content": format!("[SYSTEM] {content}"),
-        "_nudge": true,
+        "_msg_class": class.as_str(),
     }));
+}
+
+/// Append a nudge message (action model only, filtered from thinking model).
+///
+/// Thin wrapper around [`inject_system_message`] with [`MessageClass::Nudge`].
+pub fn append_nudge(messages: &mut Vec<serde_json::Value>, content: &str) {
+    inject_system_message(messages, content, MessageClass::Nudge);
+}
+
+/// Append a directive message (reaches both thinking and action models).
+///
+/// Use for error context and strategy-change guidance that the thinking
+/// model needs to plan differently.
+pub fn append_directive(messages: &mut Vec<serde_json::Value>, content: &str) {
+    inject_system_message(messages, content, MessageClass::Directive);
 }
 
 #[cfg(test)]
@@ -140,6 +186,41 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[0]["content"], "[SYSTEM] test nudge");
-        assert_eq!(messages[0]["_nudge"], true);
+        assert_eq!(messages[0]["_msg_class"], "nudge");
+    }
+
+    #[test]
+    fn test_inject_system_message_directive() {
+        let mut messages = Vec::new();
+        inject_system_message(&mut messages, "error context", MessageClass::Directive);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "[SYSTEM] error context");
+        assert_eq!(messages[0]["_msg_class"], "directive");
+    }
+
+    #[test]
+    fn test_inject_system_message_internal() {
+        let mut messages = Vec::new();
+        inject_system_message(&mut messages, "debug info", MessageClass::Internal);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "[SYSTEM] debug info");
+        assert_eq!(messages[0]["_msg_class"], "internal");
+    }
+
+    #[test]
+    fn test_append_directive() {
+        let mut messages = Vec::new();
+        append_directive(&mut messages, "strategy change");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["_msg_class"], "directive");
+    }
+
+    #[test]
+    fn test_message_class_as_str() {
+        assert_eq!(MessageClass::Directive.as_str(), "directive");
+        assert_eq!(MessageClass::Nudge.as_str(), "nudge");
+        assert_eq!(MessageClass::Internal.as_str(), "internal");
     }
 }

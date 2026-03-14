@@ -30,6 +30,15 @@ static CLEANUP_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(||
             Regex::new(r"</?parameter[^>]*>").expect("valid regex: parameter tags"),
             "",
         ),
+        // Strip echoed system/internal markers (defense-in-depth)
+        (
+            Regex::new(r"(?m)^\[SYSTEM\].*$\n?").expect("valid regex: system markers"),
+            "",
+        ),
+        (
+            Regex::new(r"(?m)^\[INTERNAL\].*$\n?").expect("valid regex: internal markers"),
+            "",
+        ),
     ]
 });
 
@@ -154,5 +163,34 @@ mod tests {
         let cleaner = ResponseCleaner::new();
         let input = "  hello  <|im_end|>  ";
         assert_eq!(cleaner.clean(Some(input)), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_clean_system_markers() {
+        let cleaner = ResponseCleaner::new();
+        let input = "Here is my response.\n[SYSTEM] You are repeating the same operation.\nContinuing with the task.";
+        let result = cleaner.clean(Some(input)).unwrap();
+        assert!(!result.contains("[SYSTEM]"));
+        assert!(result.contains("Here is my response."));
+        assert!(result.contains("Continuing with the task."));
+    }
+
+    #[test]
+    fn test_clean_internal_markers() {
+        let cleaner = ResponseCleaner::new();
+        let input = "Output text.\n[INTERNAL] debug diagnostic info\nMore output.";
+        let result = cleaner.clean(Some(input)).unwrap();
+        assert!(!result.contains("[INTERNAL]"));
+        assert!(result.contains("Output text."));
+        assert!(result.contains("More output."));
+    }
+
+    #[test]
+    fn test_clean_system_marker_only_at_line_start() {
+        let cleaner = ResponseCleaner::new();
+        // [SYSTEM] in the middle of a line should NOT be stripped
+        let input = "The error said [SYSTEM] something";
+        let result = cleaner.clean(Some(input)).unwrap();
+        assert!(result.contains("[SYSTEM]"));
     }
 }

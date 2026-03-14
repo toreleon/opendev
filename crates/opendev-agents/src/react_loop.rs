@@ -69,7 +69,9 @@ pub static PARALLELIZABLE_TOOLS: &[&str] = &[
 ];
 
 use crate::prompts::embedded;
-use crate::prompts::reminders::{append_nudge, get_reminder};
+use crate::prompts::reminders::{
+    MessageClass, append_directive, append_nudge, get_reminder, inject_system_message,
+};
 
 /// Extended readonly set for thinking-skip heuristic.
 /// Matches Python's `IterationMixin._READONLY_TOOLS`.
@@ -952,41 +954,44 @@ impl ReactLoop {
                                 iter_start.elapsed().as_millis() as u64;
                             self.push_metrics(iter_metrics);
                             return Ok(AgentResult::fail(
-                                format!("Stopped: {doom_warning}"),
+                                "The agent was unable to make progress and has been \
+                                 stopped. Please try rephrasing your request or \
+                                 providing more specific guidance."
+                                    .to_string(),
                                 messages.clone(),
                             ));
                         }
                         DoomLoopAction::Redirect | DoomLoopAction::Notify => {
-                            let recovery =
-                                doom_detector.recovery_action(&doom_action, &doom_warning);
+                            // Log raw diagnostic as Internal (never reaches any model)
+                            inject_system_message(
+                                messages,
+                                &doom_warning,
+                                MessageClass::Internal,
+                            );
+                            let recovery = doom_detector.recovery_action(&doom_action);
                             match recovery {
                                 RecoveryAction::Nudge(nudge_msg) => {
                                     debug!("Doom loop nudge: {}", nudge_msg);
-                                    messages.push(serde_json::json!({
-                                        "role": "user",
-                                        "content": format!("[SYSTEM] {nudge_msg}")
-                                    }));
+                                    // Gentle redirect — action model only
+                                    append_nudge(messages, &nudge_msg);
                                 }
                                 RecoveryAction::StepBack(step_msg) => {
                                     warn!("Doom loop step-back: {}", step_msg);
-                                    messages.push(serde_json::json!({
-                                        "role": "user",
-                                        "content": format!("[SYSTEM] {step_msg}")
-                                    }));
+                                    // Strategy change — reaches thinking model too
+                                    append_directive(messages, &step_msg);
                                 }
                                 RecoveryAction::CompactContext => {
                                     warn!(
-                                        "Doom loop suggests context compaction: {}",
+                                        "Doom loop context compaction: {}",
                                         doom_warning
                                     );
-                                    messages.push(serde_json::json!({
-                                        "role": "user",
-                                        "content": "[SYSTEM] You appear to be stuck in a \
-                                         repeating loop. Your context may be too large or \
-                                         confusing. Summarize what you have learned so far, \
-                                         discard irrelevant details, and try a fundamentally \
-                                         different approach."
-                                    }));
+                                    append_directive(
+                                        messages,
+                                        "You appear to be stuck in a repeating loop. \
+                                         Summarize what you have learned so far, discard \
+                                         irrelevant details, and try a fundamentally \
+                                         different approach.",
+                                    );
                                 }
                             }
                         }
@@ -1145,7 +1150,8 @@ impl ReactLoop {
                             "content": formatted,
                         }));
 
-                        // Smart error nudge after tool failure
+                        // Error directive after tool failure — reaches thinking model
+                        // so it can plan a different approach
                         if !tool_result.success {
                             any_tool_failed = true;
                             let error_text = tool_result.error.as_deref().unwrap_or("");
@@ -1153,13 +1159,12 @@ impl ReactLoop {
                             let nudge_name = format!("nudge_{error_type}");
                             let nudge = get_reminder(&nudge_name, &[]);
                             if nudge.is_empty() {
-                                // Fall back to generic failed tool nudge
                                 let generic = get_reminder("failed_tool_nudge", &[]);
                                 if !generic.is_empty() {
-                                    append_nudge(messages, &generic);
+                                    append_directive(messages, &generic);
                                 }
                             } else {
-                                append_nudge(messages, &nudge);
+                                append_directive(messages, &nudge);
                             }
                         }
 
@@ -1214,7 +1219,7 @@ impl ReactLoop {
                         if consecutive_reads >= 5 {
                             let nudge = get_reminder("consecutive_reads_nudge", &[]);
                             if !nudge.is_empty() {
-                                append_nudge(messages, &nudge);
+                                append_directive(messages, &nudge);
                             }
                             consecutive_reads = 0;
                         }

@@ -36,25 +36,25 @@ The Planner has finished writing the plan. You MUST now call present_plan(plan_f
 </planner_complete>
 
 --- failed_tool_nudge ---
-The previous operation failed. Please fix the issue and try again, or call task_complete with status='failed' if you cannot proceed.
+The previous tool call failed. Read the error carefully, identify the root cause, and fix it before retrying. Do NOT repeat the exact same call — change your approach. If you cannot fix the issue, try an alternative approach or explain what is blocking you.
 
 --- nudge_permission_error ---
-The operation failed due to a file permission error. Check if the file is read-only or owned by another user. Try a different path or use run_command with appropriate permissions.
+Permission denied. Do NOT retry the same command. Check if the file is read-only or try a different path you have write access to.
 
 --- nudge_file_not_found ---
-The file was not found. Use list_files or search to locate the correct path before retrying.
+File not found. Do NOT guess the path. Use list_files or search to find the correct path first, then retry with the exact path found.
 
 --- nudge_syntax_error ---
-The edit resulted in a syntax error. Read the file again to see its current state, then retry with corrected content.
+The edit introduced a syntax error. Read the file to see the current state, identify the syntax issue, and retry with corrected content. Do NOT repeat the same edit.
 
 --- nudge_rate_limit ---
 The API rate limit was hit. Wait a moment before retrying. Consider reducing concurrent operations.
 
 --- nudge_timeout ---
-The command timed out. Try a more targeted approach (e.g., search specific directories instead of the entire repo).
+The command timed out. Try a more targeted approach — narrow the scope, search specific directories instead of the entire repo, or break the operation into smaller steps.
 
 --- nudge_edit_mismatch ---
-The edit_file old_content did not match. The file may have changed. Read the file again to get the exact current content, then retry.
+The edit old_content did not match. The file has changed since you last read it. Read the file again to get its current content, then retry with the exact text.
 
 --- consecutive_reads_nudge ---
 You have been reading without taking action. If you have enough information, proceed with implementation. If you need clarification, ask the user.

@@ -58,10 +58,19 @@ impl LlmCaller {
         self
     }
 
-    /// Strip internal `_`-prefixed keys from messages before API calls.
+    /// Strip internal `_`-prefixed keys and filter out `Internal`-class messages
+    /// before API calls.
+    ///
+    /// This is the universal filter applied to all LLM payloads:
+    /// - Removes messages with `_msg_class: "internal"` entirely
+    /// - Strips `_`-prefixed metadata keys from remaining messages
     pub fn clean_messages(messages: &[Value]) -> Vec<Value> {
         messages
             .iter()
+            .filter(|msg| {
+                // Strip internal-only messages from all LLM calls
+                msg.get("_msg_class").and_then(|v| v.as_str()) != Some("internal")
+            })
             .map(|msg| {
                 if let Some(obj) = msg.as_object() {
                     if obj.keys().any(|k| k.starts_with('_')) {
@@ -83,10 +92,13 @@ impl LlmCaller {
 
     /// Build an LLM payload for a thinking call (no tools, pure reasoning).
     ///
-    /// Mirrors Python's thinking flow:
-    /// - Filters out nudge messages (`_nudge: true`)
-    /// - Optionally swaps the system prompt for a thinking-specific one
-    /// - Optionally appends an analysis prompt as a final user message
+    /// Thinking-specific filtering (applied before universal `clean_messages`):
+    /// - Keeps `Directive` messages (error context the thinking model needs)
+    /// - Strips `Nudge` messages (behavioral guardrails for action model only)
+    /// - Strips `Internal` messages (handled by `clean_messages`)
+    /// - Backward compat: strips legacy `_nudge: true` messages without `_msg_class`
+    ///
+    /// Also optionally swaps the system prompt and appends an analysis prompt.
     pub fn build_thinking_payload(
         &self,
         messages: &[Value],
@@ -95,10 +107,19 @@ impl LlmCaller {
     ) -> Value {
         let cfg = self.thinking_config.as_ref().unwrap_or(&self.config);
 
-        // Filter nudge messages BEFORE cleaning (clean_messages strips _-prefixed keys)
+        // Filter nudge-class messages BEFORE cleaning (clean_messages strips _-prefixed keys).
+        // Keep: directive, unclassified. Strip: nudge, internal (+ legacy _nudge: true).
         let cleaned: Vec<Value> = messages
             .iter()
-            .filter(|msg| !msg.get("_nudge").and_then(|v| v.as_bool()).unwrap_or(false))
+            .filter(|msg| {
+                match msg.get("_msg_class").and_then(|v| v.as_str()) {
+                    Some("nudge") | Some("internal") => false,
+                    Some(_) | None => {
+                        // Backward compat: also strip legacy _nudge: true
+                        !msg.get("_nudge").and_then(|v| v.as_bool()).unwrap_or(false)
+                    }
+                }
+            })
             .cloned()
             .collect();
         let mut cleaned = Self::clean_messages(&cleaned);
@@ -387,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_thinking_payload_filters_nudges() {
+    fn test_build_thinking_payload_filters_legacy_nudges() {
         let caller = make_caller();
         let messages = vec![
             serde_json::json!({"role": "user", "content": "hello"}),
@@ -396,9 +417,69 @@ mod tests {
         ];
         let payload = caller.build_thinking_payload(&messages, None, None);
         let msgs = payload["messages"].as_array().unwrap();
-        assert_eq!(msgs.len(), 2); // nudge filtered out
+        assert_eq!(msgs.len(), 2); // legacy nudge filtered out
         assert_eq!(msgs[0]["content"], "hello");
         assert_eq!(msgs[1]["content"], "reply");
+    }
+
+    #[test]
+    fn test_thinking_payload_keeps_directives() {
+        let caller = make_caller();
+        let messages = vec![
+            serde_json::json!({"role": "user", "content": "hello"}),
+            serde_json::json!({"role": "user", "content": "[SYSTEM] error context", "_msg_class": "directive"}),
+            serde_json::json!({"role": "assistant", "content": "reply"}),
+        ];
+        let payload = caller.build_thinking_payload(&messages, None, None);
+        let msgs = payload["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3); // directive kept
+        assert_eq!(msgs[1]["content"], "[SYSTEM] error context");
+        // _msg_class key should be stripped by clean_messages
+        assert!(msgs[1].get("_msg_class").is_none());
+    }
+
+    #[test]
+    fn test_thinking_payload_strips_nudge_class() {
+        let caller = make_caller();
+        let messages = vec![
+            serde_json::json!({"role": "user", "content": "hello"}),
+            serde_json::json!({"role": "user", "content": "[SYSTEM] todo nudge", "_msg_class": "nudge"}),
+            serde_json::json!({"role": "assistant", "content": "reply"}),
+        ];
+        let payload = caller.build_thinking_payload(&messages, None, None);
+        let msgs = payload["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2); // nudge stripped
+    }
+
+    #[test]
+    fn test_thinking_payload_strips_internal_class() {
+        let caller = make_caller();
+        let messages = vec![
+            serde_json::json!({"role": "user", "content": "hello"}),
+            serde_json::json!({"role": "user", "content": "[SYSTEM] debug info", "_msg_class": "internal"}),
+            serde_json::json!({"role": "assistant", "content": "reply"}),
+        ];
+        let payload = caller.build_thinking_payload(&messages, None, None);
+        let msgs = payload["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2); // internal stripped
+    }
+
+    #[test]
+    fn test_clean_messages_strips_internal() {
+        let messages = vec![
+            serde_json::json!({"role": "user", "content": "hello"}),
+            serde_json::json!({"role": "user", "content": "[SYSTEM] debug", "_msg_class": "internal"}),
+            serde_json::json!({"role": "user", "content": "[SYSTEM] error", "_msg_class": "directive"}),
+            serde_json::json!({"role": "user", "content": "[SYSTEM] nudge", "_msg_class": "nudge"}),
+        ];
+        let cleaned = LlmCaller::clean_messages(&messages);
+        assert_eq!(cleaned.len(), 3); // internal removed, others kept
+        assert_eq!(cleaned[0]["content"], "hello");
+        assert_eq!(cleaned[1]["content"], "[SYSTEM] error");
+        assert_eq!(cleaned[2]["content"], "[SYSTEM] nudge");
+        // _msg_class keys should be stripped
+        assert!(cleaned[1].get("_msg_class").is_none());
+        assert!(cleaned[2].get("_msg_class").is_none());
     }
 
     #[test]

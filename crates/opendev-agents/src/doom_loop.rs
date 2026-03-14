@@ -83,21 +83,29 @@ impl DoomLoopDetector {
 
     /// Map a detected doom-loop action to a concrete recovery strategy.
     ///
+    /// Returns actionable guidance decoupled from the raw diagnostic warning.
+    /// The warning text should be logged separately via `MessageClass::Internal`.
+    ///
     /// Escalation sequence:
     /// - `Redirect` (1st detection) -> `Nudge` (gentle redirect)
     /// - `Notify` (2nd detection) -> `StepBack` (reconsider approach)
     /// - `ForceStop` (3rd detection) -> `CompactContext`
     /// - `None` -> empty `Nudge` (no-op)
-    pub fn recovery_action(&self, action: &DoomLoopAction, warning: &str) -> RecoveryAction {
+    pub fn recovery_action(&self, action: &DoomLoopAction) -> RecoveryAction {
         match action {
-            DoomLoopAction::Redirect => RecoveryAction::Nudge(format!(
-                "{warning} Consider trying a different approach or tool."
-            )),
-            DoomLoopAction::Notify => RecoveryAction::StepBack(format!(
-                "Warning: {warning} Please reconsider your approach entirely. \
-                 Step back and think about what is fundamentally going wrong, \
-                 then try a different strategy."
-            )),
+            DoomLoopAction::Redirect => RecoveryAction::Nudge(
+                "You are repeating the same operation. STOP and try something different: \
+                 use a different tool, change your arguments, or ask the user for help. \
+                 Do NOT repeat the previous tool call."
+                    .to_string(),
+            ),
+            DoomLoopAction::Notify => RecoveryAction::StepBack(
+                "You have been stuck in a loop despite a previous warning. Your current \
+                 approach is not working. STOP entirely. Re-read the original task, identify \
+                 which assumption is wrong, and choose a completely different strategy. If \
+                 you cannot proceed, explain what is blocking you."
+                    .to_string(),
+            ),
             DoomLoopAction::ForceStop => RecoveryAction::CompactContext,
             DoomLoopAction::None => RecoveryAction::Nudge(String::new()),
         }
@@ -345,10 +353,10 @@ mod tests {
         let (action, warning) = det.check(&[tc.clone()]);
         assert_eq!(action, DoomLoopAction::Redirect);
 
-        let recovery = det.recovery_action(&action, &warning);
+        let recovery = det.recovery_action(&action);
         match recovery {
             RecoveryAction::Nudge(msg) => {
-                assert!(msg.contains("Consider trying a different approach"));
+                assert!(msg.contains("STOP and try something different"));
             }
             other => panic!("Expected Nudge, got {:?}", other),
         }
@@ -368,10 +376,10 @@ mod tests {
         let (action, warning) = det.check(&[tc.clone()]);
         assert_eq!(action, DoomLoopAction::Notify);
 
-        let recovery = det.recovery_action(&action, &warning);
+        let recovery = det.recovery_action(&action);
         match recovery {
             RecoveryAction::StepBack(msg) => {
-                assert!(msg.contains("reconsider your approach"));
+                assert!(msg.contains("stuck in a loop"));
             }
             other => panic!("Expected StepBack, got {:?}", other),
         }
@@ -380,14 +388,14 @@ mod tests {
     #[test]
     fn test_recovery_action_force_stop_returns_compact() {
         let det = DoomLoopDetector::new();
-        let recovery = det.recovery_action(&DoomLoopAction::ForceStop, "stuck");
+        let recovery = det.recovery_action(&DoomLoopAction::ForceStop);
         assert_eq!(recovery, RecoveryAction::CompactContext);
     }
 
     #[test]
     fn test_recovery_action_none_returns_empty_nudge() {
         let det = DoomLoopDetector::new();
-        let recovery = det.recovery_action(&DoomLoopAction::None, "");
+        let recovery = det.recovery_action(&DoomLoopAction::None);
         match recovery {
             RecoveryAction::Nudge(msg) => assert!(msg.is_empty()),
             other => panic!("Expected empty Nudge, got {:?}", other),

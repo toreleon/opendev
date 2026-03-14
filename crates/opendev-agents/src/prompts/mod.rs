@@ -15,4 +15,6 @@ pub use composer::{
 };
 pub use embedded::{TEMPLATE_COUNT, TEMPLATES, get_embedded};
 pub use loader::{PromptLoadError, PromptLoader};
-pub use reminders::{append_nudge, get_reminder};
+pub use reminders::{
+    MessageClass, append_directive, append_nudge, get_reminder, inject_system_message,
+};
