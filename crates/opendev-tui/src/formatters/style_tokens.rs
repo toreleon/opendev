@@ -334,6 +334,20 @@ impl Indent {
     pub const CONT: &str = "  ";
     /// Tool result continuation lines (5 spaces to match "  ⎿  " visual width)
     pub const RESULT_CONT: &str = "     ";
+
+    /// Pre-computed indent strings for common nesting depths (0..=4).
+    /// Avoids per-call `CONT.repeat(depth)` allocations in hot rendering paths.
+    const DEPTH: [&str; 5] = ["", "  ", "    ", "      ", "        "];
+
+    /// Return a `Cow::Borrowed` indent for common depths, falling back to
+    /// `Cow::Owned` with `CONT.repeat(depth)` for deeper nesting.
+    pub fn for_depth(depth: usize) -> std::borrow::Cow<'static, str> {
+        if depth < Self::DEPTH.len() {
+            std::borrow::Cow::Borrowed(Self::DEPTH[depth])
+        } else {
+            std::borrow::Cow::Owned(Self::CONT.repeat(depth))
+        }
+    }
 }
 
 #[cfg(test)]

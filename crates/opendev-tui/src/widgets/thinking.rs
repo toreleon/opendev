@@ -9,7 +9,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::formatters::style_tokens;
+use crate::formatters::style_tokens::{self, Indent};
 
 /// Thinking display phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +70,7 @@ pub fn render_thinking_block(block: &ThinkingBlock) -> Vec<Line<'static>> {
     if !block.collapsed {
         for content_line in block.content.lines() {
             lines.push(Line::from(vec![
-                Span::raw("  ".to_string()),
+                Span::raw(Indent::CONT),
                 Span::styled(
                     content_line.to_string(),
                     Style::default().fg(style_tokens::THINKING_BG),

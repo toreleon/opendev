@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -169,6 +170,36 @@ pub struct AppState {
     pub command_history: CommandHistory,
     /// Flag set by /compact command; agent loop consumes and triggers compaction.
     pub compact_requested: bool,
+}
+
+/// Compute a hash key for markdown cache lookup from role and content.
+fn markdown_cache_key(role: &DisplayRole, content: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    std::mem::discriminant(role).hash(&mut hasher);
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Compute a content hash for a `DisplayMessage` used by per-message dirty tracking.
+fn display_message_hash(msg: &DisplayMessage) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    std::mem::discriminant(&msg.role).hash(&mut hasher);
+    msg.content.hash(&mut hasher);
+    if let Some(ref tc) = msg.tool_call {
+        tc.name.hash(&mut hasher);
+        format!("{:?}", tc.arguments).hash(&mut hasher);
+        tc.summary.hash(&mut hasher);
+        tc.success.hash(&mut hasher);
+        tc.collapsed.hash(&mut hasher);
+        tc.result_lines.hash(&mut hasher);
+        tc.nested_calls.len().hash(&mut hasher);
+        for nested in &tc.nested_calls {
+            nested.name.hash(&mut hasher);
+            nested.success.hash(&mut hasher);
+            format!("{:?}", nested.arguments).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 /// A message prepared for display in the conversation widget.
@@ -485,31 +516,68 @@ impl App {
 
     /// Rebuild the cached static conversation lines from messages.
     ///
-    /// This is the expensive part of line building (markdown rendering, etc.)
-    /// that only needs to happen when messages actually change -- not every frame.
+    /// Uses per-message dirty tracking: each message's content is hashed and
+    /// compared with the stored hash. Only messages whose hash changed or that
+    /// are new get re-rendered. If a message in the middle changed, we rebuild
+    /// from that point forward.
     ///
-    /// Viewport culling: we estimate the line count per message and skip building
-    /// styled lines for messages whose line indices are far above the visible
-    /// viewport (scroll_offset from bottom + viewport height + 50-line buffer).
-    /// Skipped messages emit placeholder blank lines to preserve scroll math.
+    /// Viewport culling is still applied: messages far above the visible viewport
+    /// emit placeholder blank lines to preserve scroll math.
     fn rebuild_cached_lines(&mut self) {
         use crate::formatters::display::strip_system_reminders;
-        use crate::formatters::markdown::MarkdownRenderer;
-        use crate::formatters::style_tokens::{self, Indent};
-        use crate::formatters::tool_registry::{
-            categorize_tool, format_tool_call_display, tool_color,
-        };
-        use crate::widgets::spinner::{COMPLETED_CHAR, CONTINUATION_CHAR};
-        use ratatui::style::{Modifier, Style};
-        use ratatui::text::{Line, Span};
 
-        // --- Viewport culling: estimate line counts per message ---
+        let num_messages = self.state.messages.len();
+
+        // Compute per-message hashes for the current messages
+        let new_hashes: Vec<u64> = self
+            .state
+            .messages
+            .iter()
+            .map(display_message_hash)
+            .collect();
+
+        // Find the first message index where the hash differs
+        let first_dirty = {
+            let old_len = self.state.per_message_hashes.len();
+            if old_len > num_messages {
+                0 // Messages were removed -- full rebuild
+            } else {
+                let mut dirty_idx = old_len;
+                for (i, new_hash) in new_hashes
+                    .iter()
+                    .enumerate()
+                    .take(old_len.min(num_messages))
+                {
+                    if self.state.per_message_hashes[i] != *new_hash {
+                        dirty_idx = i;
+                        break;
+                    }
+                }
+                dirty_idx
+            }
+        };
+
+        // Nothing changed
+        if first_dirty >= num_messages && self.state.per_message_hashes.len() == num_messages {
+            return;
+        }
+
+        // Truncate to the point before first_dirty
+        let lines_to_keep: usize = self
+            .state
+            .per_message_line_counts
+            .iter()
+            .take(first_dirty)
+            .sum();
+        self.state.cached_lines.truncate(lines_to_keep);
+        self.state.per_message_hashes.truncate(first_dirty);
+        self.state.per_message_line_counts.truncate(first_dirty);
+
+        // --- Viewport culling ---
         let viewport_h = self.state.terminal_height as usize;
         let buffer_lines = 50;
-        // Visible window measured from bottom of content
         let visible_from_bottom = self.state.scroll_offset as usize + viewport_h + buffer_lines;
 
-        // Quick estimate of line count per message (without full rendering)
         let msg_line_estimates: Vec<usize> = self
             .state
             .messages
@@ -532,17 +600,11 @@ impl App {
                 } else {
                     0
                 };
-                // +1 for blank separator
                 text_lines + tool_lines + 1
             })
             .collect();
 
         let total_estimated: usize = msg_line_estimates.iter().sum();
-
-        // Determine which messages are within the visible window.
-        // Lines are rendered top-to-bottom; scroll_offset is from the bottom.
-        // A message is visible if its line range overlaps:
-        //   [total_estimated - visible_from_bottom, total_estimated]
         let cull_start = total_estimated.saturating_sub(visible_from_bottom);
         let mut cumulative = 0usize;
         let msg_visible: Vec<bool> = msg_line_estimates
@@ -550,221 +612,251 @@ impl App {
             .map(|&est| {
                 let msg_end = cumulative + est;
                 cumulative = msg_end;
-                // Visible if this message's line range reaches into the visible window
                 msg_end > cull_start
             })
             .collect();
 
-        let mut lines: Vec<Line<'static>> = Vec::new();
+        // Re-render only messages from first_dirty onward
+        for msg_idx in first_dirty..num_messages {
+            let msg = &self.state.messages[msg_idx];
+            let lines_before = self.state.cached_lines.len();
 
-        for (msg_idx, msg) in self.state.messages.iter().enumerate() {
-            // Viewport culling: emit placeholder lines for off-screen messages
             if !msg_visible[msg_idx] {
                 let est = msg_line_estimates[msg_idx];
                 for _ in 0..est {
-                    lines.push(Line::from(""));
+                    self.state.cached_lines.push(ratatui::text::Line::from(""));
                 }
-                continue;
-            }
-            let content = strip_system_reminders(&msg.content);
-            if content.is_empty() && msg.tool_call.is_none() {
-                continue;
-            }
-
-            match msg.role {
-                DisplayRole::Assistant => {
-                    let md_lines = MarkdownRenderer::render(&content);
-                    let mut leading_consumed = false;
-                    for md_line in md_lines {
-                        let line_text: String = md_line
-                            .spans
-                            .iter()
-                            .map(|s| s.content.to_string())
-                            .collect();
-                        let has_content = !line_text.trim().is_empty();
-
-                        if !leading_consumed && has_content {
-                            let mut spans = vec![Span::styled(
-                                format!("{} ", COMPLETED_CHAR),
-                                Style::default().fg(style_tokens::GREEN_BRIGHT),
-                            )];
-                            spans.extend(
-                                md_line
-                                    .spans
-                                    .into_iter()
-                                    .map(|s| Span::styled(s.content.to_string(), s.style)),
-                            );
-                            lines.push(Line::from(spans));
-                            leading_consumed = true;
-                        } else {
-                            let mut spans = vec![Span::raw(Indent::CONT)];
-                            spans.extend(
-                                md_line
-                                    .spans
-                                    .into_iter()
-                                    .map(|s| Span::styled(s.content.to_string(), s.style)),
-                            );
-                            lines.push(Line::from(spans));
-                        }
-                    }
-                }
-                DisplayRole::User => {
-                    let content_lines: Vec<&str> = content.lines().collect();
-                    for (i, content_line) in content_lines.iter().enumerate() {
-                        if i == 0 {
-                            lines.push(Line::from(vec![
-                                Span::styled(
-                                    "> ".to_string(),
-                                    Style::default()
-                                        .fg(style_tokens::ACCENT)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                                Span::styled(
-                                    content_line.to_string(),
-                                    Style::default().fg(style_tokens::PRIMARY),
-                                ),
-                            ]));
-                        } else {
-                            lines.push(Line::from(vec![
-                                Span::raw(Indent::CONT),
-                                Span::styled(
-                                    content_line.to_string(),
-                                    Style::default().fg(style_tokens::PRIMARY),
-                                ),
-                            ]));
-                        }
-                    }
-                }
-                DisplayRole::System => {
-                    let content_lines: Vec<&str> = content.lines().collect();
-                    for (i, content_line) in content_lines.iter().enumerate() {
-                        if i == 0 {
-                            lines.push(Line::from(vec![
-                                Span::styled(
-                                    "! ".to_string(),
-                                    Style::default()
-                                        .fg(style_tokens::WARNING)
-                                        .add_modifier(Modifier::ITALIC),
-                                ),
-                                Span::styled(
-                                    content_line.to_string(),
-                                    Style::default().fg(style_tokens::SUBTLE),
-                                ),
-                            ]));
-                        } else {
-                            lines.push(Line::from(vec![
-                                Span::raw(Indent::CONT),
-                                Span::styled(
-                                    content_line.to_string(),
-                                    Style::default().fg(style_tokens::SUBTLE),
-                                ),
-                            ]));
-                        }
-                    }
-                }
-                DisplayRole::Thinking => {
-                    for (i, content_line) in content.lines().enumerate() {
-                        if i == 0 {
-                            lines.push(Line::from(vec![
-                                Span::styled(
-                                    format!("{} ", style_tokens::THINKING_ICON),
-                                    Style::default().fg(style_tokens::THINKING_BG),
-                                ),
-                                Span::styled(
-                                    content_line.to_string(),
-                                    Style::default()
-                                        .fg(style_tokens::THINKING_BG)
-                                        .add_modifier(Modifier::ITALIC),
-                                ),
-                            ]));
-                        } else {
-                            lines.push(Line::from(vec![
-                                Span::raw(Indent::CONT),
-                                Span::styled(
-                                    content_line.to_string(),
-                                    Style::default()
-                                        .fg(style_tokens::THINKING_BG)
-                                        .add_modifier(Modifier::ITALIC),
-                                ),
-                            ]));
-                        }
-                    }
-                }
+            } else {
+                Self::render_single_message(
+                    msg,
+                    &mut self.state.cached_lines,
+                    &mut self.state.markdown_cache,
+                );
             }
 
-            // Tool call summary
-            if let Some(ref tc) = msg.tool_call {
-                let category = categorize_tool(&tc.name);
-                let color = tool_color(category);
-                let (icon, icon_color) = if tc.success {
-                    (COMPLETED_CHAR, style_tokens::GREEN_BRIGHT)
+            let lines_produced = self.state.cached_lines.len() - lines_before;
+            self.state.per_message_hashes.push(new_hashes[msg_idx]);
+            self.state.per_message_line_counts.push(lines_produced);
+        }
+    }
+
+    /// Render a single `DisplayMessage` into styled lines, appending to `lines`.
+    fn render_single_message(
+        msg: &DisplayMessage,
+        lines: &mut Vec<ratatui::text::Line<'static>>,
+        markdown_cache: &mut HashMap<u64, Vec<ratatui::text::Line<'static>>>,
+    ) {
+        use crate::formatters::display::strip_system_reminders;
+        use crate::formatters::markdown::MarkdownRenderer;
+        use crate::formatters::style_tokens::{self, Indent};
+        use crate::formatters::tool_registry::{
+            categorize_tool, format_tool_call_display, tool_color,
+        };
+        use crate::widgets::spinner::{COMPLETED_CHAR, CONTINUATION_CHAR};
+        use ratatui::style::{Modifier, Style};
+        use ratatui::text::{Line, Span};
+
+        let content = strip_system_reminders(&msg.content);
+        if content.is_empty() && msg.tool_call.is_none() {
+            return;
+        }
+
+        match msg.role {
+            DisplayRole::Assistant => {
+                let cache_key = markdown_cache_key(&msg.role, &content);
+                let md_lines = if let Some(cached) = markdown_cache.get(&cache_key) {
+                    cached.clone()
                 } else {
-                    (COMPLETED_CHAR, style_tokens::ERROR)
+                    let rendered = MarkdownRenderer::render(&content);
+                    markdown_cache.insert(cache_key, rendered.clone());
+                    rendered
                 };
-                let display = format_tool_call_display(&tc.name, &tc.arguments);
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
-                    Span::styled(
-                        display,
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+                let mut leading_consumed = false;
+                for md_line in md_lines {
+                    let line_text: String = md_line
+                        .spans
+                        .iter()
+                        .map(|s| s.content.to_string())
+                        .collect();
+                    let has_content = !line_text.trim().is_empty();
 
-                // Collapsible result lines
-                if !tc.collapsed && !tc.result_lines.is_empty() {
-                    for (i, result_line) in tc.result_lines.iter().enumerate() {
-                        let prefix_char: Cow<'static, str> = if i == 0 {
-                            format!("  {}  ", CONTINUATION_CHAR).into()
-                        } else {
-                            Cow::Borrowed(Indent::RESULT_CONT)
-                        };
+                    if !leading_consumed && has_content {
+                        let mut spans = vec![Span::styled(
+                            format!("{} ", COMPLETED_CHAR),
+                            Style::default().fg(style_tokens::GREEN_BRIGHT),
+                        )];
+                        spans.extend(
+                            md_line
+                                .spans
+                                .into_iter()
+                                .map(|s| Span::styled(s.content.to_string(), s.style)),
+                        );
+                        lines.push(Line::from(spans));
+                        leading_consumed = true;
+                    } else {
+                        let mut spans = vec![Span::raw(Indent::CONT)];
+                        spans.extend(
+                            md_line
+                                .spans
+                                .into_iter()
+                                .map(|s| Span::styled(s.content.to_string(), s.style)),
+                        );
+                        lines.push(Line::from(spans));
+                    }
+                }
+            }
+            DisplayRole::User => {
+                let content_lines: Vec<&str> = content.lines().collect();
+                for (i, content_line) in content_lines.iter().enumerate() {
+                    if i == 0 {
                         lines.push(Line::from(vec![
-                            Span::styled(prefix_char, Style::default().fg(style_tokens::SUBTLE)),
                             Span::styled(
-                                result_line.clone(),
+                                "> ".to_string(),
+                                Style::default()
+                                    .fg(style_tokens::ACCENT)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                content_line.to_string(),
+                                Style::default().fg(style_tokens::PRIMARY),
+                            ),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw(Indent::CONT),
+                            Span::styled(
+                                content_line.to_string(),
+                                Style::default().fg(style_tokens::PRIMARY),
+                            ),
+                        ]));
+                    }
+                }
+            }
+            DisplayRole::System => {
+                let content_lines: Vec<&str> = content.lines().collect();
+                for (i, content_line) in content_lines.iter().enumerate() {
+                    if i == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "! ".to_string(),
+                                Style::default()
+                                    .fg(style_tokens::WARNING)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                            Span::styled(
+                                content_line.to_string(),
+                                Style::default().fg(style_tokens::SUBTLE),
+                            ),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw(Indent::CONT),
+                            Span::styled(
+                                content_line.to_string(),
                                 Style::default().fg(style_tokens::SUBTLE),
                             ),
                         ]));
                     }
-                } else if tc.collapsed && !tc.result_lines.is_empty() {
-                    let count = tc.result_lines.len();
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "  {}  ({count} lines collapsed, press Ctrl+O to expand)",
-                            CONTINUATION_CHAR
-                        ),
-                        Style::default()
-                            .fg(style_tokens::SUBTLE)
-                            .add_modifier(Modifier::ITALIC),
-                    )));
-                }
-
-                // Nested tool calls
-                for nested in &tc.nested_calls {
-                    let n_category = categorize_tool(&nested.name);
-                    let n_color = tool_color(n_category);
-                    let (n_icon, n_icon_color) = if nested.success {
-                        (COMPLETED_CHAR, style_tokens::GREEN_BRIGHT)
-                    } else {
-                        (COMPLETED_CHAR, style_tokens::ERROR)
-                    };
-                    let n_display = format_tool_call_display(&nested.name, &nested.arguments);
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("{}\u{2514}\u{2500} ", Indent::CONT),
-                            Style::default().fg(style_tokens::SUBTLE),
-                        ),
-                        Span::styled(format!("{n_icon} "), Style::default().fg(n_icon_color)),
-                        Span::styled(n_display, Style::default().fg(n_color)),
-                    ]));
                 }
             }
-
-            // Blank line between messages
-            lines.push(Line::from(""));
+            DisplayRole::Thinking => {
+                for (i, content_line) in content.lines().enumerate() {
+                    if i == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{} ", style_tokens::THINKING_ICON),
+                                Style::default().fg(style_tokens::THINKING_BG),
+                            ),
+                            Span::styled(
+                                content_line.to_string(),
+                                Style::default()
+                                    .fg(style_tokens::THINKING_BG)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw(Indent::CONT),
+                            Span::styled(
+                                content_line.to_string(),
+                                Style::default()
+                                    .fg(style_tokens::THINKING_BG)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                        ]));
+                    }
+                }
+            }
         }
 
-        self.state.cached_lines = lines;
+        // Tool call summary
+        if let Some(ref tc) = msg.tool_call {
+            let category = categorize_tool(&tc.name);
+            let color = tool_color(category);
+            let (icon, icon_color) = if tc.success {
+                (COMPLETED_CHAR, style_tokens::GREEN_BRIGHT)
+            } else {
+                (COMPLETED_CHAR, style_tokens::ERROR)
+            };
+            let display = format_tool_call_display(&tc.name, &tc.arguments);
+            lines.push(Line::from(vec![
+                Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
+                Span::styled(
+                    display,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            if !tc.collapsed && !tc.result_lines.is_empty() {
+                for (i, result_line) in tc.result_lines.iter().enumerate() {
+                    let prefix_char: Cow<'static, str> = if i == 0 {
+                        format!("  {}  ", CONTINUATION_CHAR).into()
+                    } else {
+                        Cow::Borrowed(Indent::RESULT_CONT)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix_char, Style::default().fg(style_tokens::SUBTLE)),
+                        Span::styled(
+                            result_line.clone(),
+                            Style::default().fg(style_tokens::SUBTLE),
+                        ),
+                    ]));
+                }
+            } else if tc.collapsed && !tc.result_lines.is_empty() {
+                let count = tc.result_lines.len();
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {}  ({count} lines collapsed, press Ctrl+O to expand)",
+                        CONTINUATION_CHAR
+                    ),
+                    Style::default()
+                        .fg(style_tokens::SUBTLE)
+                        .add_modifier(Modifier::ITALIC),
+                )));
+            }
+
+            for nested in &tc.nested_calls {
+                let n_category = categorize_tool(&nested.name);
+                let n_color = tool_color(n_category);
+                let (n_icon, n_icon_color) = if nested.success {
+                    (COMPLETED_CHAR, style_tokens::GREEN_BRIGHT)
+                } else {
+                    (COMPLETED_CHAR, style_tokens::ERROR)
+                };
+                let n_display = format_tool_call_display(&nested.name, &nested.arguments);
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{}\u{2514}\u{2500} ", Indent::CONT),
+                        Style::default().fg(style_tokens::SUBTLE),
+                    ),
+                    Span::styled(format!("{n_icon} "), Style::default().fg(n_icon_color)),
+                    Span::styled(n_display, Style::default().fg(n_color)),
+                ]));
+            }
+        }
+
+        // Blank line between messages
+        lines.push(Line::from(""));
     }
 
     /// Render the full UI layout.
@@ -2280,5 +2372,4 @@ mod tests {
         assert_eq!(app.state.per_message_hashes.len(), 1);
         assert_eq!(app.state.per_message_line_counts.len(), 1);
     }
-
 }

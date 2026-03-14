@@ -4,6 +4,8 @@
 //! tool call summaries, thinking traces, system-reminder filtering,
 //! collapsible tool results, and scroll support.
 
+use std::borrow::Cow;
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -139,7 +141,7 @@ impl<'a> ConversationWidget<'a> {
                             lines.push(Line::from(spans));
                             leading_consumed = true;
                         } else {
-                            let mut spans = vec![Span::raw(Indent::CONT.to_string())];
+                            let mut spans = vec![Span::raw(Indent::CONT)];
                             spans.extend(md_line.spans);
                             lines.push(Line::from(spans));
                         }
@@ -163,7 +165,7 @@ impl<'a> ConversationWidget<'a> {
                             ]));
                         } else {
                             lines.push(Line::from(vec![
-                                Span::raw(Indent::CONT.to_string()),
+                                Span::raw(Indent::CONT),
                                 Span::styled(
                                     content_line.to_string(),
                                     Style::default().fg(style_tokens::PRIMARY),
@@ -190,7 +192,7 @@ impl<'a> ConversationWidget<'a> {
                             ]));
                         } else {
                             lines.push(Line::from(vec![
-                                Span::raw(Indent::CONT.to_string()),
+                                Span::raw(Indent::CONT),
                                 Span::styled(
                                     content_line.to_string(),
                                     Style::default().fg(style_tokens::SUBTLE),
@@ -218,7 +220,7 @@ impl<'a> ConversationWidget<'a> {
                         } else {
                             // Continuation: 2-char indent matching other roles
                             lines.push(Line::from(vec![
-                                Span::raw(Indent::CONT.to_string()),
+                                Span::raw(Indent::CONT),
                                 Span::styled(
                                     content_line.to_string(),
                                     Style::default()
@@ -239,10 +241,10 @@ impl<'a> ConversationWidget<'a> {
                 // Collapsible result lines
                 if !tc.collapsed && !tc.result_lines.is_empty() {
                     for (i, result_line) in tc.result_lines.iter().enumerate() {
-                        let prefix_char = if i == 0 {
-                            format!("  {}  ", CONTINUATION_CHAR)
+                        let prefix_char: Cow<'static, str> = if i == 0 {
+                            format!("  {}  ", CONTINUATION_CHAR).into()
                         } else {
-                            Indent::RESULT_CONT.to_string()
+                            Cow::Borrowed(Indent::RESULT_CONT)
                         };
                         lines.push(Line::from(vec![
                             Span::styled(prefix_char, Style::default().fg(style_tokens::SUBTLE)),
@@ -360,7 +362,7 @@ fn format_tool_call(tc: &DisplayToolCall) -> Line<'static> {
 
 /// Format a nested tool call with tree indent.
 fn format_nested_tool_call(tc: &DisplayToolCall, depth: usize) -> Line<'static> {
-    let indent = Indent::CONT.repeat(depth);
+    let indent = Indent::for_depth(depth);
     let category = categorize_tool(&tc.name);
     let color = tool_color(category);
 
