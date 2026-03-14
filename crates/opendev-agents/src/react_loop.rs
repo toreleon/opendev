@@ -655,14 +655,7 @@ impl ReactLoop {
 
             // Thinking phase (before action)
             // Mirrors Python's 3-step flow: think → critique → refine → inject
-            // Also skip if the last message is a thinking trace (fake pair already injected,
-            // e.g. after a retryable action failure — avoids duplicate thinking runs).
-            let thinking_already_injected = messages
-                .last()
-                .and_then(|m| m.get("_thinking"))
-                .and_then(|v| v.as_bool())
-                == Some(true);
-            let skip_thinking = thinking_already_injected || self.should_skip_thinking(messages);
+            let skip_thinking = self.should_skip_thinking(messages);
             let effective_level = self.config.effective_thinking_level();
             if effective_level.is_enabled() && !skip_thinking {
                 let _thinking_span = info_span!(
@@ -760,18 +753,16 @@ impl ReactLoop {
                                     }
                                 }
 
-                                // Inject thinking trace as a fake assistant-user conversation pair.
-                                // The assistant message makes the action model see this as its own
-                                // prior commitment; the user confirmation reinforces it via
-                                // self-consistency bias.
-                                messages.push(serde_json::json!({
-                                    "role": "assistant",
-                                    "content": final_trace,
-                                    "_thinking": true
-                                }));
+                                // Remove any previous thinking trace message from messages
+                                // to prevent accumulation across iterations.
+                                messages.retain(|m| {
+                                    m.get("_thinking").and_then(|v| v.as_bool()) != Some(true)
+                                });
+
+                                // Inject thinking trace as a tagged user message.
                                 messages.push(serde_json::json!({
                                     "role": "user",
-                                    "content": "Proceed.",
+                                    "content": get_reminder("thinking_trace_reminder", &[("thinking_trace", &final_trace)]),
                                     "_thinking": true
                                 }));
                             }
@@ -2114,11 +2105,11 @@ mod tests {
     }
 
     #[test]
-    fn test_should_skip_thinking_ignores_thinking_pair() {
-        // The fake assistant-user pair (_thinking: true) should be invisible
-        // to should_skip_thinking — it should look through them at the real messages.
+    fn test_should_skip_thinking_ignores_thinking_trace() {
+        // The thinking trace message (_thinking: true) should be invisible
+        // to should_skip_thinking — it should look through it at the real messages.
         let rl = make_loop();
-        // Readonly tools followed by thinking pair → still skip
+        // Readonly tools followed by thinking trace → still skip
         let messages = vec![
             serde_json::json!({"role": "user", "content": "read something"}),
             serde_json::json!({
@@ -2127,15 +2118,14 @@ mod tests {
                 "tool_calls": [{"id": "1", "function": {"name": "read_file", "arguments": "{}"}}]
             }),
             serde_json::json!({"role": "tool", "name": "read_file", "content": "ok", "tool_call_id": "1"}),
-            serde_json::json!({"role": "assistant", "content": "I'll read the file", "_thinking": true}),
-            serde_json::json!({"role": "user", "content": "Proceed.", "_thinking": true}),
+            serde_json::json!({"role": "user", "content": "<thinking_trace>...</thinking_trace>", "_thinking": true}),
         ];
         assert!(rl.should_skip_thinking(&messages));
     }
 
     #[test]
-    fn test_should_not_skip_thinking_with_pair_after_write() {
-        // Write tool followed by thinking pair → don't skip
+    fn test_should_not_skip_thinking_with_trace_after_write() {
+        // Write tool followed by thinking trace → don't skip
         let rl = make_loop();
         let messages = vec![
             serde_json::json!({"role": "user", "content": "edit something"}),
@@ -2145,20 +2135,18 @@ mod tests {
                 "tool_calls": [{"id": "1", "function": {"name": "edit_file", "arguments": "{}"}}]
             }),
             serde_json::json!({"role": "tool", "name": "edit_file", "content": "ok", "tool_call_id": "1"}),
-            serde_json::json!({"role": "assistant", "content": "I'll edit", "_thinking": true}),
-            serde_json::json!({"role": "user", "content": "Proceed.", "_thinking": true}),
+            serde_json::json!({"role": "user", "content": "<thinking_trace>...</thinking_trace>", "_thinking": true}),
         ];
         assert!(!rl.should_skip_thinking(&messages));
     }
 
     #[test]
-    fn test_should_not_skip_thinking_only_pair_no_tools() {
-        // Only thinking pair, no tool results → don't skip (retryable failure case)
+    fn test_should_not_skip_thinking_only_trace_no_tools() {
+        // Only thinking trace, no tool results → don't skip (retryable failure case)
         let rl = make_loop();
         let messages = vec![
             serde_json::json!({"role": "user", "content": "hello"}),
-            serde_json::json!({"role": "assistant", "content": "I should respond", "_thinking": true}),
-            serde_json::json!({"role": "user", "content": "Proceed.", "_thinking": true}),
+            serde_json::json!({"role": "user", "content": "<thinking_trace>...</thinking_trace>", "_thinking": true}),
         ];
         assert!(!rl.should_skip_thinking(&messages));
     }

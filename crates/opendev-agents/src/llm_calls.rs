@@ -159,6 +159,10 @@ impl LlmCaller {
         let cleaned: Vec<Value> = messages
             .iter()
             .filter(|msg| {
+                // Strip injected thinking trace pairs
+                if msg.get("_thinking").and_then(|v| v.as_bool()) == Some(true) {
+                    return false;
+                }
                 match msg.get("_msg_class").and_then(|v| v.as_str()) {
                     Some("nudge") | Some("internal") => false,
                     Some(_) | None => {
