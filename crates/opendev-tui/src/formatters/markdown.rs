@@ -142,7 +142,7 @@ fn is_ordered_list_line(line: &str) -> bool {
     }
 }
 
-/// Parse inline spans handling backtick code and bold markers.
+/// Parse inline spans handling markdown links, backtick code, and bold markers.
 ///
 /// Uses `Cow<'static, str>` internally: substrings that require no
 /// transformation are converted to owned `String`s only once (at the Span
@@ -154,16 +154,38 @@ fn parse_inline_spans(text: &str) -> Vec<Span<'static>> {
     let mut remaining = text;
 
     while !remaining.is_empty() {
-        // Look for inline code
-        if let Some(code_start) = remaining.find('`') {
-            // Add text before the backtick
+        // Find the next interesting marker: backtick or markdown link
+        let next_backtick = remaining.find('`');
+        let next_link = find_markdown_link(remaining);
+
+        // Determine which marker comes first
+        let use_link = match (next_backtick, &next_link) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(bt), Some((ls, _, _, _))) => *ls < bt,
+        };
+
+        if use_link {
+            let (link_start, link_text, _url, link_end) = next_link.unwrap();
+            if link_start > 0 {
+                spans.extend(parse_bold_spans(&remaining[..link_start]));
+            }
+            let display: Cow<'static, str> = Cow::Owned(link_text.to_string());
+            spans.push(Span::styled(
+                display,
+                Style::default()
+                    .fg(style_tokens::BLUE_BRIGHT)
+                    .add_modifier(Modifier::UNDERLINED),
+            ));
+            remaining = &remaining[link_end..];
+        } else if let Some(code_start) = next_backtick {
             if code_start > 0 {
                 spans.extend(parse_bold_spans(&remaining[..code_start]));
             }
-
             let after_start = &remaining[code_start + 1..];
             if let Some(code_end) = after_start.find('`') {
-                let code: Cow<'static, str> = Cow::Owned(after_start[..code_end].to_string());
+                let code: Cow<'static, str> =
+                    Cow::Owned(after_start[..code_end].to_string());
                 spans.push(Span::styled(
                     code,
                     Style::default()
@@ -172,7 +194,6 @@ fn parse_inline_spans(text: &str) -> Vec<Span<'static>> {
                 ));
                 remaining = &after_start[code_end + 1..];
             } else {
-                // No closing backtick — treat rest as plain text
                 spans.extend(parse_bold_spans(remaining));
                 break;
             }
@@ -187,6 +208,28 @@ fn parse_inline_spans(text: &str) -> Vec<Span<'static>> {
     }
 
     spans
+}
+
+/// Find a markdown link `[text](url)` in the given text.
+/// Returns `(start, link_text, url, end)` where end is the byte offset past the closing `)`.
+fn find_markdown_link(text: &str) -> Option<(usize, &str, &str, usize)> {
+    let open_bracket = text.find('[')?;
+    let after_bracket = &text[open_bracket + 1..];
+    let close_bracket = after_bracket.find(']')?;
+    let link_text = &after_bracket[..close_bracket];
+
+    // The `](` must immediately follow the `]`
+    let after_close = &after_bracket[close_bracket + 1..];
+    if !after_close.starts_with('(') {
+        return None;
+    }
+    let after_paren = &after_close[1..];
+    let close_paren = after_paren.find(')')?;
+    let url = &after_paren[..close_paren];
+
+    // Total end offset: open_bracket + 1 + close_bracket + 1 + 1 + close_paren + 1
+    let end = open_bracket + 1 + close_bracket + 1 + 1 + close_paren + 1;
+    Some((open_bracket, link_text, url, end))
 }
 
 /// Parse bold markers (**text**) within a segment of text.
@@ -332,5 +375,25 @@ mod tests {
     fn test_bold_text() {
         let spans = parse_bold_spans("this is **bold** text");
         assert!(spans.len() >= 3);
+    }
+
+    #[test]
+    fn test_markdown_link() {
+        let spans = parse_inline_spans("visit [example](http://example.com) now");
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "visit example now");
+        // The link span should be underlined
+        let link_span = &spans[1];
+        assert_eq!(link_span.content.as_ref(), "example");
+        assert!(link_span.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn test_markdown_link_url_as_text() {
+        // Common pattern: [http://url](http://url)
+        let spans =
+            parse_inline_spans("running at [http://localhost:5173/](http://localhost:5173/).");
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "running at http://localhost:5173/.");
     }
 }
