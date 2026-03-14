@@ -16,7 +16,7 @@ use crate::llm_calls::LlmCaller;
 use crate::response::ResponseCleaner;
 use crate::traits::{AgentError, AgentResult, LlmResponse, TaskMonitor};
 use opendev_http::adapted_client::AdaptedClient;
-use opendev_runtime::{play_finish_sound, ThinkingLevel};
+use opendev_runtime::{CostTracker, TokenUsage, play_finish_sound, ThinkingLevel};
 use opendev_tools_core::{ToolContext, ToolRegistry};
 
 /// Metrics for a single tool call execution.
@@ -511,6 +511,7 @@ impl ReactLoop {
         tool_context: &ToolContext,
         task_monitor: Option<&M>,
         event_callback: Option<&dyn crate::traits::AgentEventCallback>,
+        cost_tracker: Option<&Mutex<CostTracker>>,
     ) -> Result<AgentResult, AgentError>
     where
         M: TaskMonitor + ?Sized,
@@ -732,6 +733,16 @@ impl ReactLoop {
                 && let Some(total) = usage.get("total_tokens").and_then(|t| t.as_u64())
             {
                 monitor.update_tokens(total);
+            }
+
+            // Record cost tracking
+            if let Some(ct) = cost_tracker
+                && let Some(ref usage_json) = response.usage
+            {
+                let token_usage = TokenUsage::from_json(usage_json);
+                if let Ok(mut tracker) = ct.lock() {
+                    tracker.record_usage(&token_usage, None);
+                }
             }
 
             // Initialize per-iteration metrics

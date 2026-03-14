@@ -51,8 +51,8 @@ pub struct AgentRuntime {
     pub llm_caller: LlmCaller,
     /// ReAct loop.
     pub react_loop: ReactLoop,
-    /// Cost tracker.
-    pub cost_tracker: CostTracker,
+    /// Cost tracker (shared with the react loop for per-call recording).
+    pub cost_tracker: Mutex<CostTracker>,
 }
 
 /// Register all built-in tools into the registry.
@@ -212,8 +212,7 @@ impl AgentRuntime {
                 )
             }
             "gemini" | "google" => {
-                let adapter =
-                    opendev_http::adapters::gemini::GeminiAdapter::new(&config.model);
+                let adapter = opendev_http::adapters::gemini::GeminiAdapter::new(&config.model);
                 let api_url = config
                     .api_base_url
                     .clone()
@@ -301,9 +300,8 @@ impl AgentRuntime {
             }
         };
 
-        let circuit_breaker = std::sync::Arc::new(
-            opendev_http::CircuitBreaker::with_defaults(&provider),
-        );
+        let circuit_breaker =
+            std::sync::Arc::new(opendev_http::CircuitBreaker::with_defaults(&provider));
         let raw_http_client = HttpClient::new(api_url, headers, None)
             .map_err(|e| format!("Failed to create HTTP client: {e}"))?
             .with_circuit_breaker(circuit_breaker);
@@ -337,7 +335,7 @@ impl AgentRuntime {
 
         let react_loop = ReactLoop::new(ReactLoopConfig::default());
 
-        let cost_tracker = CostTracker::new();
+        let cost_tracker = Mutex::new(CostTracker::new());
 
         Ok(Self {
             config,
@@ -456,6 +454,7 @@ impl AgentRuntime {
                 &tool_context,
                 None::<&dyn TaskMonitor>,
                 event_callback,
+                Some(&self.cost_tracker),
             )
             .await?;
 
@@ -478,6 +477,17 @@ impl AgentRuntime {
         // Step 8: Persist session to disk
         if let Err(e) = self.session_manager.save_current() {
             warn!("Failed to save session: {e}");
+        }
+
+        // Log session cost
+        if let Ok(tracker) = self.cost_tracker.lock() {
+            info!(
+                cost = tracker.format_cost(),
+                calls = tracker.call_count,
+                input_tokens = tracker.total_input_tokens,
+                output_tokens = tracker.total_output_tokens,
+                "Session cost update"
+            );
         }
 
         info!(

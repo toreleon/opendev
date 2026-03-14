@@ -334,6 +334,7 @@ impl BaseAgent for MainAgent {
                 &tool_context,
                 task_monitor,
                 None,
+                None,
             )
             .await
     }
