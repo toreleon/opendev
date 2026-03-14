@@ -1709,7 +1709,10 @@ impl App {
                     } else {
                         result_lines
                     };
-                    let collapse = lines.len() > 5 && !is_diff_tool(&tool_name);
+                    let always_collapse =
+                        matches!(tool_name.as_str(), "list_processes");
+                    let collapse =
+                        always_collapse || (lines.len() > 5 && !is_diff_tool(&tool_name));
                     (lines, collapse)
                 };
 

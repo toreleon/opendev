@@ -479,23 +479,34 @@ pub fn format_tool_call_display(
     tool_name: &str,
     args: &HashMap<String, serde_json::Value>,
 ) -> String {
+    let (verb, arg) = format_tool_call_parts(tool_name, args);
+    format!("{verb}({arg})")
+}
+
+/// Format a tool call into separate verb and arg parts.
+///
+/// Returns `(verb, arg_summary)` — e.g. `("Read", "/path/to/file.rs")` or `("Bash", "ls -la")`.
+pub fn format_tool_call_parts(
+    tool_name: &str,
+    args: &HashMap<String, serde_json::Value>,
+) -> (String, String) {
     let entry = lookup_tool(tool_name);
 
     // Try to extract a meaningful summary from args
     if let Some(summary) = extract_arg_from_keys(entry.primary_arg_keys, args) {
-        return format!("{}({summary})", entry.verb);
+        return (entry.verb.to_string(), summary);
     }
 
     // MCP tool: show server/tool format
     if tool_name.starts_with("mcp__") {
         let parts: Vec<&str> = tool_name.splitn(3, "__").collect();
         if parts.len() == 3 {
-            return format!("MCP({}/{})", parts[1], parts[2]);
+            return ("MCP".to_string(), format!("{}/{}", parts[1], parts[2]));
         }
     }
 
     // Fallback: verb(label)
-    format!("{}({})", entry.verb, entry.label)
+    (entry.verb.to_string(), entry.label.to_string())
 }
 
 /// Green gradient colors for nested tool spinner animation.

@@ -20,7 +20,7 @@ use crate::app::{DisplayMessage, DisplayRole, DisplayToolCall, RoleStyle, ToolEx
 use crate::formatters::display::strip_system_reminders;
 use crate::formatters::markdown::MarkdownRenderer;
 use crate::formatters::style_tokens::{self, Indent};
-use crate::formatters::tool_registry::{categorize_tool, format_tool_call_display, tool_color};
+use crate::formatters::tool_registry::{categorize_tool, format_tool_call_parts};
 use crate::widgets::progress::TaskProgress;
 use crate::widgets::spinner::{COMPLETED_CHAR, CONTINUATION_CHAR, SPINNER_FRAMES};
 
@@ -430,16 +430,21 @@ impl<'a> ConversationWidget<'a> {
                         }
                     }
                 } else if effective_collapsed && !tc.result_lines.is_empty() {
-                    // Show collapsed indicator
+                    // Show collapsed indicator — read tools get a short summary
                     let count = tc.result_lines.len();
-                    lines.push(Line::from(Span::styled(
+                    let is_read = categorize_tool(&tc.name)
+                        == crate::formatters::tool_registry::ToolCategory::FileRead;
+                    let label = if is_read {
+                        format!("  {}  ({count} lines)", CONTINUATION_CHAR)
+                    } else {
                         format!(
                             "  {}  ({count} lines collapsed, press Ctrl+O to expand)",
-                            CONTINUATION_CHAR
-                        ),
-                        Style::default()
-                            .fg(style_tokens::SUBTLE)
-                            .add_modifier(Modifier::ITALIC),
+                            CONTINUATION_CHAR,
+                        )
+                    };
+                    lines.push(Line::from(Span::styled(
+                        label,
+                        Style::default().fg(style_tokens::SUBTLE),
                     )));
                 }
 
@@ -479,18 +484,23 @@ impl<'a> ConversationWidget<'a> {
 
         if !active_unfinished.is_empty() {
             for tool in &active_unfinished {
-                let category = categorize_tool(&tool.name);
-                let name_color = tool_color(category);
                 let frame_idx = tool.tick_count % SPINNER_FRAMES.len();
                 let spinner = SPINNER_FRAMES[frame_idx];
+                let (verb, arg) = format_tool_call_parts(&tool.name, &tool.args);
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("{spinner} "),
                         Style::default().fg(style_tokens::BLUE_BRIGHT),
                     ),
                     Span::styled(
-                        tool.name.clone(),
-                        Style::default().fg(name_color).add_modifier(Modifier::BOLD),
+                        verb,
+                        Style::default()
+                            .fg(style_tokens::PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("({arg})"),
+                        Style::default().fg(style_tokens::SUBTLE),
                     ),
                     Span::styled(
                         format!(" ({}s)", tool.elapsed_secs),
@@ -522,31 +532,29 @@ impl<'a> ConversationWidget<'a> {
 
 /// Format a tool call as a styled line with category color coding.
 fn format_tool_call(tc: &DisplayToolCall) -> Line<'static> {
-    let category = categorize_tool(&tc.name);
-    let color = tool_color(category);
-
     let (icon, icon_color) = if tc.success {
         (COMPLETED_CHAR, style_tokens::GREEN_BRIGHT)
     } else {
         (COMPLETED_CHAR, style_tokens::ERROR)
     };
 
-    let display = format_tool_call_display(&tc.name, &tc.arguments);
+    let (verb, arg) = format_tool_call_parts(&tc.name, &tc.arguments);
 
     Line::from(vec![
         Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
         Span::styled(
-            display,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
+            verb,
+            Style::default()
+                .fg(style_tokens::PRIMARY)
+                .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(format!("({arg})"), Style::default().fg(style_tokens::SUBTLE)),
     ])
 }
 
 /// Format a nested tool call with tree indent.
 fn format_nested_tool_call(tc: &DisplayToolCall, depth: usize) -> Line<'static> {
     let indent = Indent::for_depth(depth);
-    let category = categorize_tool(&tc.name);
-    let color = tool_color(category);
 
     let (icon, icon_color) = if tc.success {
         (COMPLETED_CHAR, style_tokens::GREEN_BRIGHT)
@@ -554,7 +562,7 @@ fn format_nested_tool_call(tc: &DisplayToolCall, depth: usize) -> Line<'static> 
         (COMPLETED_CHAR, style_tokens::ERROR)
     };
 
-    let display = format_tool_call_display(&tc.name, &tc.arguments);
+    let (verb, arg) = format_tool_call_parts(&tc.name, &tc.arguments);
 
     Line::from(vec![
         Span::styled(
@@ -562,7 +570,13 @@ fn format_nested_tool_call(tc: &DisplayToolCall, depth: usize) -> Line<'static> 
             Style::default().fg(style_tokens::SUBTLE),
         ),
         Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
-        Span::styled(display, Style::default().fg(color)),
+        Span::styled(
+            verb,
+            Style::default()
+                .fg(style_tokens::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("({arg})"), Style::default().fg(style_tokens::SUBTLE)),
     ])
 }
 
@@ -778,7 +792,9 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect();
-        assert!(text.contains("collapsed"));
+        // read_file shows short summary without "Ctrl+O" hint
+        assert!(text.contains("2 lines"));
+        assert!(!text.contains("Ctrl+O"));
     }
 
     #[test]
@@ -789,9 +805,11 @@ mod tests {
             tool_call: None,
             collapsed: false,
         }];
+        let mut args = std::collections::HashMap::new();
+        args.insert("command".into(), serde_json::Value::String("ls -la".into()));
         let tools = vec![ToolExecution {
             id: "t1".into(),
-            name: "bash".into(),
+            name: "run_command".into(),
             output_lines: vec![],
             state: crate::app::ToolState::Running,
             elapsed_secs: 3,
@@ -799,7 +817,7 @@ mod tests {
             tick_count: 0,
             parent_id: None,
             depth: 0,
-            args: Default::default(),
+            args,
         }];
         let widget = ConversationWidget::new(&msgs, 0).active_tools(&tools);
         // Spinner is now built separately from message lines
@@ -809,7 +827,9 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect();
-        assert!(text.contains("bash"));
+        // Should show display name like "Bash(ls -la)" not raw "run_command"
+        assert!(text.contains("Bash"));
+        assert!(text.contains("ls -la"));
         assert!(text.contains("(3s)"));
         // Message lines should NOT contain spinner content
         let msg_lines = widget.build_lines();
@@ -883,8 +903,8 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect();
-        // Active tools shown, not thinking
-        assert!(text.contains("read_file"));
+        // Active tools shown with display name, not thinking
+        assert!(text.contains("Read"));
         assert!(!text.contains("Thinking..."));
     }
 
