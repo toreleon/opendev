@@ -118,9 +118,8 @@ mod tests {
 
     #[test]
     fn test_api_url_custom_version() {
-        let adapter =
-            AzureOpenAiAdapter::new("https://myresource.openai.azure.com", "gpt-4o")
-                .with_api_version("2024-06-01");
+        let adapter = AzureOpenAiAdapter::new("https://myresource.openai.azure.com", "gpt-4o")
+            .with_api_version("2024-06-01");
         assert_eq!(
             adapter.api_url(),
             "https://myresource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01"
@@ -129,8 +128,7 @@ mod tests {
 
     #[test]
     fn test_api_url_trailing_slash() {
-        let adapter =
-            AzureOpenAiAdapter::new("https://myresource.openai.azure.com/", "gpt-4o");
+        let adapter = AzureOpenAiAdapter::new("https://myresource.openai.azure.com/", "gpt-4o");
         assert_eq!(
             adapter.api_url(),
             "https://myresource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-15-preview"

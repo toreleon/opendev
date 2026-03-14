@@ -49,13 +49,11 @@ impl AdaptedClient {
     /// (groq, fireworks, mistral, etc.).
     pub fn adapter_for_provider(provider: &str) -> Option<Box<dyn ProviderAdapter>> {
         match provider {
-            "anthropic" => Some(Box::new(
-                crate::adapters::anthropic::AnthropicAdapter::new(),
-            )),
+            "anthropic" => Some(Box::new(crate::adapters::anthropic::AnthropicAdapter::new())),
             "openai" => Some(Box::new(crate::adapters::openai::OpenAiAdapter::new())),
-            "gemini" | "google" => Some(Box::new(
-                crate::adapters::gemini::GeminiAdapter::default(),
-            )),
+            "gemini" | "google" => {
+                Some(Box::new(crate::adapters::gemini::GeminiAdapter::default()))
+            }
             _ => None,
         }
     }
@@ -165,7 +163,10 @@ mod tests {
 
     #[test]
     fn test_resolve_provider_explicit() {
-        assert_eq!(AdaptedClient::resolve_provider("anthropic", ""), "anthropic");
+        assert_eq!(
+            AdaptedClient::resolve_provider("anthropic", ""),
+            "anthropic"
+        );
         assert_eq!(
             AdaptedClient::resolve_provider("custom", "sk-ant-abc"),
             "custom"
@@ -178,25 +179,16 @@ mod tests {
             AdaptedClient::resolve_provider("", "sk-ant-api03-abc"),
             "anthropic"
         );
-        assert_eq!(
-            AdaptedClient::resolve_provider("", "sk-proj-abc"),
-            "openai"
-        );
+        assert_eq!(AdaptedClient::resolve_provider("", "sk-proj-abc"), "openai");
         assert_eq!(
             AdaptedClient::resolve_provider("", "AIzaSyAbc123"),
             "gemini"
         );
-        assert_eq!(
-            AdaptedClient::resolve_provider("", "gsk_abc123"),
-            "groq"
-        );
+        assert_eq!(AdaptedClient::resolve_provider("", "gsk_abc123"), "groq");
     }
 
     #[test]
     fn test_resolve_provider_fallback_to_openai() {
-        assert_eq!(
-            AdaptedClient::resolve_provider("", "unknown-key"),
-            "openai"
-        );
+        assert_eq!(AdaptedClient::resolve_provider("", "unknown-key"), "openai");
     }
 }

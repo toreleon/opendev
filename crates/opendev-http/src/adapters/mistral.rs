@@ -60,8 +60,7 @@ impl MistralAdapter {
                             && let Some(args) = func.get("arguments")
                             && (args.is_object() || args.is_array())
                         {
-                            let args_str =
-                                serde_json::to_string(args).unwrap_or_default();
+                            let args_str = serde_json::to_string(args).unwrap_or_default();
                             func["arguments"] = Value::String(args_str);
                         }
                     }

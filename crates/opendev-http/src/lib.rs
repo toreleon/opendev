@@ -17,7 +17,7 @@ pub mod user_store;
 
 pub use adapted_client::AdaptedClient;
 pub use auth::CredentialStore;
-pub use circuit_breaker::CircuitBreaker;
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use client::HttpClient;
 pub use models::{HttpError, HttpResult, RetryConfig};
 pub use rotation::AuthProfileManager;

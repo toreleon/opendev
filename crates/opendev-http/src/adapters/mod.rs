@@ -7,6 +7,7 @@
 pub mod anthropic;
 pub mod azure;
 pub mod base;
+pub mod bedrock;
 pub mod gemini;
 pub mod groq;
 pub mod mistral;

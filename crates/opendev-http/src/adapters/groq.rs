@@ -246,10 +246,7 @@ mod tests {
     fn test_rate_limit_info_from_headers() {
         let headers = vec![
             ("x-ratelimit-limit-requests".to_string(), "30".to_string()),
-            (
-                "x-ratelimit-limit-tokens".to_string(),
-                "30000".to_string(),
-            ),
+            ("x-ratelimit-limit-tokens".to_string(), "30000".to_string()),
             (
                 "x-ratelimit-remaining-requests".to_string(),
                 "29".to_string(),
@@ -258,14 +255,8 @@ mod tests {
                 "x-ratelimit-remaining-tokens".to_string(),
                 "29500".to_string(),
             ),
-            (
-                "x-ratelimit-reset-requests".to_string(),
-                "2s".to_string(),
-            ),
-            (
-                "x-ratelimit-reset-tokens".to_string(),
-                "1s".to_string(),
-            ),
+            ("x-ratelimit-reset-requests".to_string(), "2s".to_string()),
+            ("x-ratelimit-reset-tokens".to_string(), "1s".to_string()),
         ];
         let info = RateLimitInfo::from_headers(&headers);
 

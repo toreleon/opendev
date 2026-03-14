@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::models::HttpError;
@@ -26,6 +27,31 @@ pub enum CircuitState {
     Open,
     /// Cooldown elapsed — one probe request is permitted.
     HalfOpen,
+}
+
+/// Configuration for a circuit breaker.
+///
+/// This struct is serializable so it can be loaded from config files or
+/// passed as part of provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircuitBreakerConfig {
+    /// Number of consecutive failures before opening the circuit.
+    pub failure_threshold: u32,
+    /// Seconds the circuit stays open before transitioning to half-open.
+    pub reset_timeout_secs: u64,
+    /// Seconds between probe attempts in the half-open state.
+    /// Defaults to the same value as `reset_timeout_secs` if not set.
+    pub probe_interval_secs: u64,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: 5,
+            reset_timeout_secs: 30,
+            probe_interval_secs: 30,
+        }
+    }
 }
 
 /// A circuit breaker that tracks consecutive failures and opens the circuit
@@ -62,6 +88,15 @@ impl CircuitBreaker {
     /// Create a circuit breaker with sensible defaults (5 failures, 30s cooldown).
     pub fn with_defaults(provider: impl Into<String>) -> Self {
         Self::new(provider, 5, Duration::from_secs(30))
+    }
+
+    /// Create a circuit breaker from a [`CircuitBreakerConfig`].
+    pub fn from_config(provider: impl Into<String>, config: &CircuitBreakerConfig) -> Self {
+        Self::new(
+            provider,
+            config.failure_threshold,
+            Duration::from_secs(config.reset_timeout_secs),
+        )
     }
 
     /// Return the current state of the circuit.
@@ -295,5 +330,60 @@ mod tests {
         // Since cooldown is 0ms, it'll be HalfOpen again immediately
         // but the failure count is 3, confirming the circuit was re-triggered
         assert!(cb.failure_count() >= cb.threshold);
+    }
+
+    // --- #57: CircuitBreakerConfig tests ---
+
+    #[test]
+    fn test_circuit_breaker_config_default() {
+        let config = CircuitBreakerConfig::default();
+        assert_eq!(config.failure_threshold, 5);
+        assert_eq!(config.reset_timeout_secs, 30);
+        assert_eq!(config.probe_interval_secs, 30);
+    }
+
+    #[test]
+    fn test_circuit_breaker_config_serde_roundtrip() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 10,
+            reset_timeout_secs: 60,
+            probe_interval_secs: 15,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: CircuitBreakerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.failure_threshold, 10);
+        assert_eq!(deserialized.reset_timeout_secs, 60);
+        assert_eq!(deserialized.probe_interval_secs, 15);
+    }
+
+    #[test]
+    fn test_circuit_breaker_from_config() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 3,
+            reset_timeout_secs: 10,
+            probe_interval_secs: 5,
+        };
+        let cb = CircuitBreaker::from_config("test-provider", &config);
+
+        assert_eq!(cb.state(), CircuitState::Closed);
+        assert_eq!(cb.threshold, 3);
+        assert_eq!(cb.cooldown, Duration::from_secs(10));
+
+        // Open after 3 failures
+        cb.record_failure();
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Closed);
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    #[test]
+    fn test_circuit_breaker_config_from_json() {
+        let json =
+            r#"{"failure_threshold": 7, "reset_timeout_secs": 45, "probe_interval_secs": 10}"#;
+        let config: CircuitBreakerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.failure_threshold, 7);
+        assert_eq!(config.reset_timeout_secs, 45);
+        assert_eq!(config.probe_interval_secs, 10);
     }
 }
