@@ -317,6 +317,30 @@ impl Default for ExecutionReflector {
     }
 }
 
+/// Default recency decay factor per day.
+const RECENCY_DECAY: f64 = 0.95;
+
+/// Score a reflection by evidence count and recency.
+///
+/// The score combines evidence strength with temporal decay:
+///   `score = evidence_count * recency_decay^age_days`
+///
+/// - More evidence (observations supporting the reflection) increases the score.
+/// - Older reflections decay exponentially, encouraging fresh insights.
+/// - A reflection with zero evidence scores 0.0 regardless of age.
+///
+/// # Arguments
+/// * `_reflection` - The reflection text (reserved for future content-based scoring).
+/// * `evidence_count` - Number of supporting observations.
+/// * `age_days` - How many days old the reflection is.
+pub fn score_reflection(_reflection: &str, evidence_count: usize, age_days: u64) -> f64 {
+    if evidence_count == 0 {
+        return 0.0;
+    }
+    let decay = RECENCY_DECAY.powi(age_days as i32);
+    evidence_count as f64 * decay
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,5 +474,58 @@ mod tests {
         // Most patterns have confidence < 0.9, so this should fail
         let result = reflector.reflect("query", &calls, "success");
         assert!(result.is_none());
+    }
+
+    // ------------------------------------------------------------------ //
+    // score_reflection tests
+    // ------------------------------------------------------------------ //
+
+    #[test]
+    fn test_score_reflection_zero_evidence() {
+        let score = score_reflection("some insight", 0, 0);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_score_reflection_fresh() {
+        let score = score_reflection("fresh insight", 5, 0);
+        // 5 * 0.95^0 = 5.0
+        assert!((score - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_score_reflection_one_day_old() {
+        let score = score_reflection("day old", 1, 1);
+        // 1 * 0.95^1 = 0.95
+        assert!((score - 0.95).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_score_reflection_decays_over_time() {
+        let fresh = score_reflection("insight", 3, 0);
+        let week_old = score_reflection("insight", 3, 7);
+        let month_old = score_reflection("insight", 3, 30);
+
+        assert!(fresh > week_old, "fresh > week old");
+        assert!(week_old > month_old, "week old > month old");
+        assert!(month_old > 0.0, "month old still positive");
+    }
+
+    #[test]
+    fn test_score_reflection_more_evidence_higher_score() {
+        let low = score_reflection("insight", 1, 5);
+        let high = score_reflection("insight", 10, 5);
+        assert!(high > low);
+        // Both should have the same decay factor: 0.95^5
+        let ratio = high / low;
+        assert!((ratio - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_score_reflection_large_age() {
+        let score = score_reflection("ancient", 1, 365);
+        // 0.95^365 is very small but positive
+        assert!(score > 0.0);
+        assert!(score < 0.001, "very old reflection should have tiny score");
     }
 }

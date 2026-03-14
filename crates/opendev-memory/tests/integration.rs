@@ -374,7 +374,7 @@ fn embedding_cache_model_scoping() {
 /// Embedding cache miss returns None.
 #[test]
 fn embedding_cache_miss() {
-    let cache = EmbeddingCache::new("test");
+    let mut cache = EmbeddingCache::new("test");
     assert!(cache.get("not cached", None).is_none());
 }
 
@@ -401,7 +401,7 @@ fn embedding_cache_file_persistence() {
     cache.set("world", vec![0.4, 0.5, 0.6], None);
     cache.save_to_file(&path).unwrap();
 
-    let loaded = EmbeddingCache::load_from_file(&path).unwrap();
+    let mut loaded = EmbeddingCache::load_from_file(&path).unwrap();
     assert_eq!(loaded.size(), 2);
     assert_eq!(loaded.model, "text-embedding-3-small");
     assert!(loaded.get("hello", None).is_some());

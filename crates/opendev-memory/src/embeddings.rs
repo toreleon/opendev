@@ -37,39 +37,102 @@ impl EmbeddingMetadata {
 ///
 /// Stores embeddings in memory and can be persisted to disk.
 /// Cache keys are based on content hash + model name.
+/// Uses LRU eviction when the cache exceeds `max_entries`.
 #[derive(Debug, Clone)]
 pub struct EmbeddingCache {
     pub model: String,
     cache: HashMap<String, EmbeddingMetadata>,
+    /// Maximum number of entries before LRU eviction kicks in.
+    pub max_entries: usize,
+    /// Access order tracking: most recently used keys are at the end.
+    access_order: Vec<String>,
 }
 
 impl EmbeddingCache {
-    /// Create a new embedding cache.
+    /// Create a new embedding cache with the default max entries (10,000).
     pub fn new(model: &str) -> Self {
         Self {
             model: model.to_string(),
             cache: HashMap::new(),
+            max_entries: DEFAULT_MAX_ENTRIES,
+            access_order: Vec::new(),
+        }
+    }
+
+    /// Create a new embedding cache with a custom max entries limit.
+    pub fn with_max_entries(model: &str, max_entries: usize) -> Self {
+        Self {
+            model: model.to_string(),
+            cache: HashMap::new(),
+            max_entries,
+            access_order: Vec::new(),
         }
     }
 
     /// Get cached embedding for text.
-    pub fn get(&self, text: &str, model: Option<&str>) -> Option<&Vec<f64>> {
+    ///
+    /// Marks the entry as recently used for LRU tracking.
+    pub fn get(&mut self, text: &str, model: Option<&str>) -> Option<&Vec<f64>> {
+        let model = model.unwrap_or(&self.model);
+        let key = make_key(text, model);
+        if self.cache.contains_key(&key) {
+            self.touch(&key);
+            self.cache.get(&key).map(|meta| &meta.embedding)
+        } else {
+            None
+        }
+    }
+
+    /// Get cached embedding without updating LRU order (read-only lookup).
+    pub fn peek(&self, text: &str, model: Option<&str>) -> Option<&Vec<f64>> {
         let model = model.unwrap_or(&self.model);
         let key = make_key(text, model);
         self.cache.get(&key).map(|meta| &meta.embedding)
     }
 
     /// Cache an embedding.
+    ///
+    /// If the cache is at capacity, the least-recently-used entry is evicted.
     pub fn set(&mut self, text: &str, embedding: Vec<f64>, model: Option<&str>) {
-        let model = model.unwrap_or(&self.model);
-        let key = make_key(text, model);
-        let metadata = EmbeddingMetadata::create(text, model, embedding);
-        self.cache.insert(key, metadata);
+        let model_str = model.unwrap_or(&self.model).to_string();
+        let key = make_key(text, &model_str);
+
+        // If key already exists, just update it
+        if self.cache.contains_key(&key) {
+            let metadata = EmbeddingMetadata::create(text, &model_str, embedding);
+            self.cache.insert(key.clone(), metadata);
+            self.touch(&key);
+            return;
+        }
+
+        // Evict LRU entry if at capacity
+        if self.max_entries > 0 && self.cache.len() >= self.max_entries {
+            self.evict_lru();
+        }
+
+        let metadata = EmbeddingMetadata::create(text, &model_str, embedding);
+        self.cache.insert(key.clone(), metadata);
+        self.access_order.push(key);
+    }
+
+    /// Move key to end of access_order (most recently used).
+    fn touch(&mut self, key: &str) {
+        self.access_order.retain(|k| k != key);
+        self.access_order.push(key.to_string());
+    }
+
+    /// Evict the least-recently-used entry (front of access_order).
+    fn evict_lru(&mut self) {
+        if let Some(lru_key) = self.access_order.first().cloned() {
+            self.cache.remove(&lru_key);
+            self.access_order.remove(0);
+        }
     }
 
     /// Clear all cached embeddings.
     pub fn clear(&mut self) {
         self.cache.clear();
+        self.access_order.clear();
     }
 
     /// Get number of cached embeddings.
@@ -86,6 +149,7 @@ impl EmbeddingCache {
             .collect();
         serde_json::json!({
             "model": self.model,
+            "max_entries": self.max_entries,
             "cache": cache_map,
         })
     }
@@ -98,16 +162,29 @@ impl EmbeddingCache {
             .unwrap_or("text-embedding-3-small")
             .to_string();
 
+        let max_entries = data
+            .get("max_entries")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_MAX_ENTRIES);
+
         let mut cache = HashMap::new();
+        let mut access_order = Vec::new();
         if let Some(cache_obj) = data.get("cache").and_then(|v| v.as_object()) {
             for (key, val) in cache_obj {
                 if let Ok(meta) = serde_json::from_value::<EmbeddingMetadata>(val.clone()) {
                     cache.insert(key.clone(), meta);
+                    access_order.push(key.clone());
                 }
             }
         }
 
-        Self { model, cache }
+        Self {
+            model,
+            cache,
+            max_entries,
+            access_order,
+        }
     }
 
     /// Save cache to JSON file.
@@ -130,6 +207,22 @@ impl EmbeddingCache {
 impl Default for EmbeddingCache {
     fn default() -> Self {
         Self::new("text-embedding-3-small")
+    }
+}
+
+/// Configuration for EmbeddingCache.
+#[derive(Debug, Clone)]
+pub struct EmbeddingCacheConfig {
+    pub model: String,
+    pub max_entries: usize,
+}
+
+impl Default for EmbeddingCacheConfig {
+    fn default() -> Self {
+        Self {
+            model: "text-embedding-3-small".to_string(),
+            max_entries: DEFAULT_MAX_ENTRIES,
+        }
     }
 }
 
@@ -220,10 +313,10 @@ mod tests {
         cache.set("hello", vec![1.0], None);
 
         // Same text, same model -> found
-        assert!(cache.get("hello", Some("model-a")).is_some());
+        assert!(cache.peek("hello", Some("model-a")).is_some());
 
         // Same text, different model -> not found
-        assert!(cache.get("hello", Some("model-b")).is_none());
+        assert!(cache.peek("hello", Some("model-b")).is_none());
     }
 
     #[test]
@@ -244,7 +337,7 @@ mod tests {
         cache.set("world", vec![0.3, 0.4], None);
 
         let dict = cache.to_dict();
-        let restored = EmbeddingCache::from_dict(&dict);
+        let mut restored = EmbeddingCache::from_dict(&dict);
 
         assert_eq!(restored.model, "test-model");
         assert_eq!(restored.size(), 2);
@@ -261,7 +354,7 @@ mod tests {
         cache.set("hello", vec![0.1, 0.2, 0.3], None);
         cache.save_to_file(&path).unwrap();
 
-        let loaded = EmbeddingCache::load_from_file(&path).unwrap();
+        let mut loaded = EmbeddingCache::load_from_file(&path).unwrap();
         assert_eq!(loaded.size(), 1);
         assert!(loaded.get("hello", None).is_some());
     }
@@ -342,5 +435,102 @@ mod tests {
         let h1 = make_hash("a");
         let h2 = make_hash("b");
         assert_ne!(h1, h2);
+    }
+
+    // ------------------------------------------------------------------ //
+    // LRU eviction tests
+    // ------------------------------------------------------------------ //
+
+    #[test]
+    fn test_lru_eviction_at_capacity() {
+        let mut cache = EmbeddingCache::with_max_entries("test", 3);
+        cache.set("a", vec![1.0], None);
+        cache.set("b", vec![2.0], None);
+        cache.set("c", vec![3.0], None);
+        assert_eq!(cache.size(), 3);
+
+        // Adding a 4th entry should evict "a" (least recently used)
+        cache.set("d", vec![4.0], None);
+        assert_eq!(cache.size(), 3);
+        assert!(cache.peek("a", None).is_none(), "a should be evicted");
+        assert!(cache.peek("b", None).is_some());
+        assert!(cache.peek("c", None).is_some());
+        assert!(cache.peek("d", None).is_some());
+    }
+
+    #[test]
+    fn test_lru_access_refreshes_order() {
+        let mut cache = EmbeddingCache::with_max_entries("test", 3);
+        cache.set("a", vec![1.0], None);
+        cache.set("b", vec![2.0], None);
+        cache.set("c", vec![3.0], None);
+
+        // Access "a" to make it most-recently-used
+        cache.get("a", None);
+
+        // Now "b" is LRU; adding "d" should evict "b"
+        cache.set("d", vec![4.0], None);
+        assert_eq!(cache.size(), 3);
+        assert!(cache.peek("a", None).is_some(), "a was recently accessed");
+        assert!(cache.peek("b", None).is_none(), "b should be evicted");
+        assert!(cache.peek("c", None).is_some());
+        assert!(cache.peek("d", None).is_some());
+    }
+
+    #[test]
+    fn test_lru_update_existing_key_no_eviction() {
+        let mut cache = EmbeddingCache::with_max_entries("test", 3);
+        cache.set("a", vec![1.0], None);
+        cache.set("b", vec![2.0], None);
+        cache.set("c", vec![3.0], None);
+
+        // Updating existing key should not trigger eviction
+        cache.set("a", vec![10.0], None);
+        assert_eq!(cache.size(), 3);
+        assert_eq!(cache.get("a", None).unwrap(), &vec![10.0]);
+    }
+
+    #[test]
+    fn test_lru_default_max_entries() {
+        let cache = EmbeddingCache::new("test");
+        assert_eq!(cache.max_entries, DEFAULT_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn test_lru_with_max_entries_constructor() {
+        let cache = EmbeddingCache::with_max_entries("test", 500);
+        assert_eq!(cache.max_entries, 500);
+    }
+
+    #[test]
+    fn test_lru_clear_resets_access_order() {
+        let mut cache = EmbeddingCache::with_max_entries("test", 3);
+        cache.set("a", vec![1.0], None);
+        cache.set("b", vec![2.0], None);
+        cache.clear();
+        assert_eq!(cache.size(), 0);
+
+        // After clear, can fill up again without premature eviction
+        cache.set("x", vec![1.0], None);
+        cache.set("y", vec![2.0], None);
+        cache.set("z", vec![3.0], None);
+        assert_eq!(cache.size(), 3);
+    }
+
+    #[test]
+    fn test_lru_serialization_preserves_max_entries() {
+        let mut cache = EmbeddingCache::with_max_entries("test", 500);
+        cache.set("a", vec![1.0], None);
+
+        let dict = cache.to_dict();
+        let restored = EmbeddingCache::from_dict(&dict);
+        assert_eq!(restored.max_entries, 500);
+    }
+
+    #[test]
+    fn test_embedding_cache_config_default() {
+        let config = EmbeddingCacheConfig::default();
+        assert_eq!(config.model, "text-embedding-3-small");
+        assert_eq!(config.max_entries, DEFAULT_MAX_ENTRIES);
     }
 }

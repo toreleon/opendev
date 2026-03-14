@@ -147,8 +147,8 @@ impl BulletSelector {
             return 0.0;
         }
 
-        let query_emb = self.embedding_cache.get(query, None);
-        let bullet_emb = self.embedding_cache.get(&bullet.content, None);
+        let query_emb = self.embedding_cache.peek(query, None);
+        let bullet_emb = self.embedding_cache.peek(&bullet.content, None);
 
         match (query_emb, bullet_emb) {
             (Some(q), Some(b)) => {

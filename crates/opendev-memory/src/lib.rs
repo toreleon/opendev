@@ -10,16 +10,20 @@
 
 pub mod delta;
 pub mod embeddings;
+pub mod local_embeddings;
 pub mod playbook;
 pub mod reflector;
 pub mod roles;
 pub mod selector;
+pub mod session_search;
 pub mod summarizer;
 
 pub use delta::{DeltaBatch, DeltaOperation, DeltaOperationType};
-pub use embeddings::{EmbeddingCache, EmbeddingMetadata};
+pub use embeddings::{EmbeddingCache, EmbeddingCacheConfig, EmbeddingMetadata};
+pub use local_embeddings::{LocalEmbedder, TfIdfEmbedder};
 pub use playbook::{Bullet, Playbook};
-pub use reflector::{ExecutionReflector, ReflectionResult};
+pub use reflector::{ExecutionReflector, ReflectionResult, score_reflection};
 pub use roles::{AgentResponse, BulletTag, CuratorOutput, ReflectorOutput};
 pub use selector::{BulletSelector, ScoredBullet};
-pub use summarizer::ConversationSummarizer;
+pub use session_search::{semantic_search_sessions, semantic_search_sessions_default};
+pub use summarizer::{ConversationSummarizer, consolidate_learnings};
