@@ -963,6 +963,160 @@ impl ContextCompactor {
         buf
     }
 
+    /// Sanitize messages for LLM summarization.
+    ///
+    /// Strips tool call details and truncates content to reduce token usage.
+    fn sanitize_for_summarization(messages: &[ApiMessage]) -> Vec<serde_json::Value> {
+        let mut sanitized = Vec::new();
+        for msg in messages {
+            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            if !content.is_empty() {
+                let snippet: String = content.chars().take(500).collect();
+                sanitized.push(serde_json::json!(format!("[{role}] {snippet}")));
+            }
+        }
+        sanitized
+    }
+
+    /// Use an LLM to create a high-quality summary of conversation messages.
+    ///
+    /// Falls back to `fallback_summary()` if the LLM call fails.
+    ///
+    /// # Arguments
+    /// * `messages` — The middle section of messages to summarize
+    /// * `system_prompt` — The compaction system prompt (load from templates/system/compaction.md)
+    /// * `model` — Model ID for the compact model (e.g. "gpt-4o-mini")
+    /// * `api_key` — API key for the provider
+    /// * `api_base` — Base URL for the API (e.g. "https://api.openai.com/v1")
+    pub async fn llm_summarize(
+        messages: &[ApiMessage],
+        system_prompt: &str,
+        model: &str,
+        api_key: &str,
+        api_base: &str,
+    ) -> String {
+        let parts = Self::sanitize_for_summarization(messages);
+        let conversation_text: String = parts
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let payload = serde_json::json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": conversation_text},
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.2,
+        });
+
+        let endpoint = format!("{api_base}/chat/completions");
+
+        let client = reqwest::Client::new();
+        let result = client
+            .post(&endpoint)
+            .bearer_auth(api_key)
+            .json(&payload)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(body) = resp.json::<serde_json::Value>().await
+                    && let Some(content) = body
+                        .pointer("/choices/0/message/content")
+                        .and_then(|v| v.as_str())
+                {
+                    info!(
+                        model,
+                        msg_count = messages.len(),
+                        summary_len = content.len(),
+                        "LLM compaction succeeded"
+                    );
+                    return content.to_string();
+                }
+                warn!("LLM compaction: unexpected response format, using fallback");
+            }
+            Ok(resp) => {
+                warn!(
+                    status = %resp.status(),
+                    "LLM compaction failed with HTTP error, using fallback"
+                );
+            }
+            Err(e) => {
+                warn!("LLM compaction request failed: {e}, using fallback");
+            }
+        }
+
+        Self::fallback_summary(messages)
+    }
+
+    /// Compact older messages using LLM-powered summarization.
+    ///
+    /// Like `compact()` but uses the configured compact model for
+    /// intelligent summarization instead of basic string truncation.
+    /// Falls back to `fallback_summary()` on any LLM error.
+    pub async fn compact_with_llm(
+        &mut self,
+        messages: Vec<ApiMessage>,
+        system_prompt: &str,
+        model: &str,
+        api_key: &str,
+        api_base: &str,
+    ) -> Vec<ApiMessage> {
+        if messages.len() <= 4 {
+            return messages;
+        }
+
+        let keep_recent = (messages.len() / 3).clamp(2, 5);
+        let split_point = messages.len() - keep_recent;
+
+        let head = &messages[..1];
+        let middle = &messages[1..split_point];
+        let tail = &messages[split_point..];
+
+        if middle.is_empty() {
+            return messages;
+        }
+
+        let summary_text = Self::llm_summarize(middle, system_prompt, model, api_key, api_base).await;
+        let artifact_summary = self.artifact_index.as_summary();
+        let mut full_summary = format!("[CONVERSATION SUMMARY]\n{summary_text}");
+        if !artifact_summary.is_empty() {
+            full_summary.push_str("\n\n");
+            full_summary.push_str(&artifact_summary);
+        }
+
+        let mut summary_msg = ApiMessage::new();
+        summary_msg.insert("role".into(), serde_json::Value::String("user".into()));
+        summary_msg.insert("content".into(), serde_json::Value::String(full_summary));
+
+        let mut compacted = Vec::with_capacity(head.len() + 1 + tail.len());
+        compacted.extend_from_slice(head);
+        compacted.push(summary_msg);
+        compacted.extend_from_slice(tail);
+
+        info!(
+            "LLM-compacted {} messages -> {} (removed {}, kept {} recent)",
+            messages.len(),
+            compacted.len(),
+            middle.len(),
+            keep_recent,
+        );
+
+        self.api_prompt_tokens = 0;
+        self.msg_count_at_calibration = 0;
+        self.warned_70 = false;
+        self.warned_80 = false;
+        self.warned_90 = false;
+
+        compacted
+    }
+
     /// Estimate total tokens across messages and system prompt.
     ///
     /// Uses the improved `count_tokens` heuristic (cl100k_base approximation)
@@ -1597,5 +1751,101 @@ mod tests {
                 .unwrap()
                 .starts_with("[summary:")
         );
+    }
+
+    #[test]
+    fn test_sanitize_for_summarization() {
+        let messages = vec![
+            make_msg("user", "Fix the login bug"),
+            make_msg("assistant", "I'll look into that"),
+            make_msg("tool", ""), // empty content, should be skipped
+        ];
+        let sanitized = ContextCompactor::sanitize_for_summarization(&messages);
+        assert_eq!(sanitized.len(), 2);
+        assert!(sanitized[0].as_str().unwrap().contains("[user]"));
+        assert!(sanitized[1].as_str().unwrap().contains("[assistant]"));
+    }
+
+    #[test]
+    fn test_sanitize_truncates_long_content() {
+        let long_content = "x".repeat(1000);
+        let messages = vec![make_msg("user", &long_content)];
+        let sanitized = ContextCompactor::sanitize_for_summarization(&messages);
+        let text = sanitized[0].as_str().unwrap();
+        // [user] prefix + 500 chars of content
+        assert!(text.len() < 520);
+    }
+
+    #[tokio::test]
+    async fn test_llm_summarize_fallback_on_bad_url() {
+        // With an invalid API base, should fall back gracefully
+        let messages = vec![
+            make_msg("user", "Hello"),
+            make_msg("assistant", "Hi there"),
+        ];
+        let result = ContextCompactor::llm_summarize(
+            &messages,
+            "You are a compactor.",
+            "gpt-4o-mini",
+            "fake-key",
+            "http://127.0.0.1:1", // unreachable
+        )
+        .await;
+        // Should get fallback summary, not panic
+        assert!(result.contains("[user]") || result.contains("[assistant]"));
+    }
+
+    #[tokio::test]
+    async fn test_compact_with_llm_fallback() {
+        let mut compactor = ContextCompactor::new(100_000);
+        let messages = vec![
+            make_msg("system", "You are a helpful assistant."),
+            make_msg("user", "Step 1"),
+            make_msg("assistant", "Done step 1"),
+            make_msg("user", "Step 2"),
+            make_msg("assistant", "Done step 2"),
+            make_msg("user", "Step 3"),
+            make_msg("assistant", "Done step 3"),
+        ];
+
+        let result = compactor
+            .compact_with_llm(
+                messages,
+                "system prompt",
+                "gpt-4o-mini",
+                "fake-key",
+                "http://127.0.0.1:1",
+            )
+            .await;
+
+        // Should compact (LLM fails, fallback used)
+        assert!(result.len() < 7);
+        // First message preserved
+        assert_eq!(
+            result[0].get("role").and_then(|v| v.as_str()),
+            Some("system")
+        );
+        // Summary message present
+        let summary_content = result[1]
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(summary_content.contains("[CONVERSATION SUMMARY]"));
+    }
+
+    #[tokio::test]
+    async fn test_compact_with_llm_too_few_messages() {
+        let mut compactor = ContextCompactor::new(100_000);
+        let messages = vec![
+            make_msg("system", "sys"),
+            make_msg("user", "hi"),
+        ];
+
+        let result = compactor
+            .compact_with_llm(messages.clone(), "sys", "model", "key", "http://x")
+            .await;
+
+        // Should return unchanged (too few messages)
+        assert_eq!(result.len(), 2);
     }
 }
