@@ -1249,17 +1249,28 @@ impl ReactLoop {
                             }
                         }
 
-                        // Tool approval gate for bash/run_command
+                        // Tool approval gate for bash/run_command and MCP tools.
+                        // MCP tools (mcp__*) are external and should require approval
+                        // by default, same as run_command.
                         // Skip if permission rules explicitly allow this tool.
-                        if tool_name == "run_command"
+                        let needs_approval_gate = tool_name == "run_command"
+                            || tool_name.starts_with("mcp__");
+                        if needs_approval_gate
                             && !permission_allows
                             && let Some(approval_tx) = tool_approval_tx
                         {
-                            let command = args_map
-                                .get("command")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                            let command = if tool_name == "run_command" {
+                                args_map
+                                    .get("command")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string()
+                            } else {
+                                // For MCP and other tools, summarize the args
+                                serde_json::to_string_pretty(
+                                    &serde_json::Value::Object(args_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+                                ).unwrap_or_default()
+                            };
                             let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                             let req = opendev_runtime::ToolApprovalRequest {
                                 tool_name: tool_name.to_string(),
@@ -2555,5 +2566,60 @@ mod tests {
     fn test_default_config_has_empty_permissions() {
         let config = ReactLoopConfig::default();
         assert!(config.permission.is_empty());
+    }
+
+    #[test]
+    fn test_mcp_tool_needs_approval_gate() {
+        // MCP tools (mcp__*) should be treated the same as run_command
+        // for approval purposes
+        let tool_name = "mcp__github__create_issue";
+        let needs_approval = tool_name == "run_command" || tool_name.starts_with("mcp__");
+        assert!(needs_approval);
+
+        // Regular tools should not need the bash approval gate
+        let tool_name = "read_file";
+        let needs_approval = tool_name == "run_command" || tool_name.starts_with("mcp__");
+        assert!(!needs_approval);
+    }
+
+    #[test]
+    fn test_mcp_permission_rule_matches() {
+        let mut config = ReactLoopConfig::default();
+        config.permission.insert(
+            "mcp__*".to_string(),
+            PermissionRule::Action(PermissionAction::Ask),
+        );
+        // MCP tool should match the glob
+        assert_eq!(
+            config.evaluate_permission("mcp__sqlite__query", ""),
+            Some(PermissionAction::Ask)
+        );
+        // Non-MCP tool should not match
+        assert!(config.evaluate_permission("read_file", "").is_none());
+    }
+
+    #[test]
+    fn test_mcp_permission_allow_specific() {
+        let mut config = ReactLoopConfig::default();
+        // Deny all MCP by default
+        config.permission.insert(
+            "mcp__*".to_string(),
+            PermissionRule::Action(PermissionAction::Deny),
+        );
+        // But allow a specific MCP tool
+        config.permission.insert(
+            "mcp__sqlite__query".to_string(),
+            PermissionRule::Action(PermissionAction::Allow),
+        );
+        // Specific rule should win (higher specificity)
+        assert_eq!(
+            config.evaluate_permission("mcp__sqlite__query", ""),
+            Some(PermissionAction::Allow)
+        );
+        // Other MCP tools should be denied
+        assert_eq!(
+            config.evaluate_permission("mcp__github__push", ""),
+            Some(PermissionAction::Deny)
+        );
     }
 }

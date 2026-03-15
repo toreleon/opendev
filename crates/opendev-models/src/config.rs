@@ -363,6 +363,10 @@ pub struct AppConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skill_urls: Vec<String>,
 
+    // Default agent to use for new sessions (e.g. "general", "explore")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+
     // Model variants
     #[serde(default)]
     pub model_variants: HashMap<String, ModelVariant>,
@@ -448,6 +452,7 @@ impl Default for AppConfig {
             instructions: Vec::new(),
             skill_paths: Vec::new(),
             skill_urls: Vec::new(),
+            default_agent: None,
             model_variants: HashMap::new(),
             config_version: default_config_version(),
         }
