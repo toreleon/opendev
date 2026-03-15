@@ -136,17 +136,23 @@ impl SubagentManager {
 
     /// Create a manager with built-in specs plus custom agents loaded from disk.
     ///
-    /// Scans `{working_dir}/.opendev/agents/` and `~/.opendev/agents/` for
-    /// user-defined agent markdown files. Custom agents override built-ins
-    /// with the same name.
+    /// Scans agent directories in priority order (first = highest priority):
+    /// - `{working_dir}/.claude/agents/`
+    /// - `{working_dir}/.opendev/agents/`
+    /// - `~/.claude/agents/`
+    /// - `~/.opendev/agents/`
+    ///
+    /// Custom agents override built-ins with the same name.
     pub fn with_builtins_and_custom(working_dir: &std::path::Path) -> Self {
         let mut mgr = Self::with_builtins();
+        let home = dirs::home_dir().unwrap_or_default();
+        // Order: lowest priority first (later register() calls override earlier).
+        // Global dirs load first, then project dirs override, .claude overrides .opendev.
         let dirs = vec![
+            home.join(".opendev").join("agents"),
+            home.join(".claude").join("agents"),
             working_dir.join(".opendev").join("agents"),
-            dirs::home_dir()
-                .unwrap_or_default()
-                .join(".opendev")
-                .join("agents"),
+            working_dir.join(".claude").join("agents"),
         ];
         for spec in super::custom_loader::load_custom_agents(&dirs) {
             mgr.register(spec);
@@ -169,8 +175,17 @@ impl SubagentManager {
         self.specs.get(subagent_type.canonical_name())
     }
 
-    /// List all registered subagent names.
+    /// List all registered subagent names (excludes hidden and disabled agents).
     pub fn names(&self) -> Vec<&str> {
+        self.specs
+            .values()
+            .filter(|s| !s.hidden && !s.disable)
+            .map(|s| s.name.as_str())
+            .collect()
+    }
+
+    /// List all registered subagent names including hidden ones.
+    pub fn all_names(&self) -> Vec<&str> {
         self.specs.keys().map(|s| s.as_str()).collect()
     }
 
@@ -192,9 +207,11 @@ impl SubagentManager {
     /// Build tool schemas description listing available subagents.
     ///
     /// Used to populate the `subagent_type` enum in the `spawn_subagent` tool schema.
+    /// Excludes hidden and disabled agents.
     pub fn build_enum_description(&self) -> Vec<(String, String)> {
         self.specs
             .values()
+            .filter(|s| !s.hidden && !s.disable)
             .map(|s| (s.name.clone(), s.description.clone()))
             .collect()
     }
@@ -230,6 +247,13 @@ impl SubagentManager {
             AgentError::ConfigError(format!("Unknown subagent type: {subagent_name}"))
         })?;
 
+        // Block spawning disabled agents.
+        if spec.disable {
+            return Err(AgentError::ConfigError(format!(
+                "Agent '{subagent_name}' is disabled"
+            )));
+        }
+
         info!(
             subagent = %spec.name,
             task_len = task.len(),
@@ -243,19 +267,37 @@ impl SubagentManager {
         let model = spec.model.as_deref().unwrap_or(parent_model).to_string();
 
         // Build restricted tool list (if specified)
-        let allowed_tools = if spec.has_tool_restriction() {
+        let mut allowed_tools = if spec.has_tool_restriction() {
             Some(spec.tools.clone())
         } else {
             None
         };
 
+        // Remove tools that have blanket deny in permission rules.
+        // These are completely hidden from the LLM so it won't even attempt them.
+        if !spec.permission.is_empty() {
+            let all_names = tool_registry.tool_names();
+            let all_refs: Vec<&str> = all_names.iter().map(|s| s.as_str()).collect();
+            let denied = spec.disabled_tools(&all_refs);
+            if !denied.is_empty() {
+                let tools = allowed_tools.get_or_insert_with(|| all_names.clone());
+                tools.retain(|t| !denied.contains(t));
+                debug!(
+                    subagent = %spec.name,
+                    denied_tools = ?denied,
+                    "Removed permission-denied tools from schema"
+                );
+            }
+        }
+
         // Create an isolated MainAgent for this subagent
+        let temperature = spec.temperature.map(|t| t as f64).unwrap_or(0.7);
         let config = MainAgentConfig {
             model,
             model_thinking: None,
             model_critique: None,
-            temperature: Some(0.7),
-            max_tokens: Some(4096),
+            temperature: Some(temperature),
+            max_tokens: Some(spec.max_tokens.unwrap_or(4096) as u64),
             working_dir: Some(working_dir.to_string()),
             allowed_tools,
             model_provider: None,
@@ -263,13 +305,38 @@ impl SubagentManager {
 
         let mut agent = MainAgent::new(config, tool_registry);
         agent.set_http_client(http_client);
-        agent.set_system_prompt(&spec.system_prompt);
 
-        // Subagents get a limited iteration budget
+        // Build the subagent's system prompt by combining the spec prompt
+        // with project instruction files (AGENTS.md, CLAUDE.md, etc.) so
+        // subagents follow the same project rules as the main agent.
+        let system_prompt = {
+            let wd = std::path::Path::new(working_dir);
+            let instructions = opendev_context::discover_instruction_files(wd);
+            if instructions.is_empty() {
+                spec.system_prompt.clone()
+            } else {
+                let mut parts = vec![spec.system_prompt.clone()];
+                parts.push("\n\n# Project Instructions\n".to_string());
+                for instr in &instructions {
+                    let filename = instr
+                        .path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    parts.push(format!("## {} ({})\n{}", filename, instr.scope, instr.content));
+                }
+                parts.join("\n")
+            }
+        };
+        agent.set_system_prompt(&system_prompt);
+
+        // Subagents get a limited iteration budget (spec override or default 25)
+        let max_iterations = spec.max_steps.unwrap_or(25) as usize;
         agent.set_react_config(ReactLoopConfig {
-            max_iterations: Some(25),
+            max_iterations: Some(max_iterations),
             max_nudge_attempts: 2,
             max_todo_nudges: 2,
+            permission: spec.permission.clone(),
             ..Default::default()
         });
 
@@ -418,5 +485,189 @@ mod tests {
         let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
         assert!(mgr.len() >= 4); // 3 builtins + 1 custom
         assert!(mgr.get("test-agent").is_some());
+    }
+
+    #[test]
+    fn test_hidden_agents_excluded_from_names() {
+        let mut mgr = SubagentManager::new();
+        mgr.register(make_spec("visible"));
+        mgr.register(
+            SubAgentSpec::new("hidden-agent", "Hidden", "prompt").with_hidden(true),
+        );
+
+        let names = mgr.names();
+        assert!(names.contains(&"visible"));
+        assert!(!names.contains(&"hidden-agent"));
+
+        // all_names includes hidden
+        let all = mgr.all_names();
+        assert!(all.contains(&"visible"));
+        assert!(all.contains(&"hidden-agent"));
+    }
+
+    #[test]
+    fn test_hidden_agents_excluded_from_enum_description() {
+        let mut mgr = SubagentManager::new();
+        mgr.register(make_spec("visible"));
+        mgr.register(
+            SubAgentSpec::new("hidden-agent", "Hidden", "prompt").with_hidden(true),
+        );
+
+        let descs = mgr.build_enum_description();
+        assert_eq!(descs.len(), 1);
+        assert_eq!(descs[0].0, "visible");
+    }
+
+    #[test]
+    fn test_hidden_agents_still_gettable() {
+        let mut mgr = SubagentManager::new();
+        mgr.register(
+            SubAgentSpec::new("hidden-agent", "Hidden", "prompt").with_hidden(true),
+        );
+
+        // Hidden agents can still be retrieved by name (for programmatic spawning)
+        assert!(mgr.get("hidden-agent").is_some());
+    }
+
+    #[test]
+    fn test_custom_agent_with_steps_and_temperature() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_dir = tmp.path().join(".opendev").join("agents");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("custom.md"),
+            "---\ndescription: Custom\nsteps: 50\ntemperature: 0.3\nhidden: true\n---\nYou are custom.",
+        )
+        .unwrap();
+
+        let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
+        let spec = mgr.get("custom").unwrap();
+        assert_eq!(spec.max_steps, Some(50));
+        assert_eq!(spec.temperature, Some(0.3));
+        assert!(spec.hidden);
+
+        // Hidden agent excluded from names
+        assert!(!mgr.names().contains(&"custom"));
+    }
+
+    #[test]
+    fn test_custom_agent_overrides_builtin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_dir = tmp.path().join(".opendev").join("agents");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        // Create a custom agent with same name as a builtin
+        std::fs::write(
+            agent_dir.join("Code-Explorer.md"),
+            "---\ndescription: Custom explorer\ntemperature: 0.1\n---\nCustom explorer prompt.",
+        )
+        .unwrap();
+
+        let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
+        let spec = mgr.get("Code-Explorer").unwrap();
+        // Custom should override the builtin
+        assert!(spec.system_prompt.contains("Custom explorer prompt"));
+        assert_eq!(spec.temperature, Some(0.1));
+    }
+
+    #[test]
+    fn test_with_claude_agents_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude").join("agents");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("claude-agent.md"),
+            "---\ndescription: Claude agent\n---\nClaude agent prompt.",
+        )
+        .unwrap();
+
+        let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
+        assert!(mgr.get("claude-agent").is_some());
+    }
+
+    #[test]
+    fn test_claude_agents_higher_priority_than_opendev() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create same-named agent in both directories
+        let claude_dir = tmp.path().join(".claude").join("agents");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("reviewer.md"),
+            "---\ndescription: Claude reviewer\n---\nClaude reviewer.",
+        )
+        .unwrap();
+
+        let opendev_dir = tmp.path().join(".opendev").join("agents");
+        std::fs::create_dir_all(&opendev_dir).unwrap();
+        std::fs::write(
+            opendev_dir.join("reviewer.md"),
+            "---\ndescription: OpenDev reviewer\n---\nOpenDev reviewer.",
+        )
+        .unwrap();
+
+        let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
+        let spec = mgr.get("reviewer").unwrap();
+        // .claude/ is loaded last (highest priority), so it wins
+        assert!(
+            spec.system_prompt.contains("Claude reviewer"),
+            "Claude agent should override OpenDev agent, got: {}",
+            spec.system_prompt
+        );
+    }
+
+    // ---- Disabled agent filtering ----
+
+    #[test]
+    fn test_disabled_agents_excluded_from_names() {
+        let mut mgr = SubagentManager::new();
+        mgr.register(make_spec("active"));
+        mgr.register(
+            SubAgentSpec::new("disabled-agent", "Disabled", "prompt").with_disable(true),
+        );
+
+        let names = mgr.names();
+        assert!(names.contains(&"active"));
+        assert!(
+            !names.contains(&"disabled-agent"),
+            "Disabled agents should be excluded from names()"
+        );
+    }
+
+    #[test]
+    fn test_disabled_agents_excluded_from_enum_description() {
+        let mut mgr = SubagentManager::new();
+        mgr.register(make_spec("active"));
+        mgr.register(
+            SubAgentSpec::new("disabled-agent", "Disabled", "prompt").with_disable(true),
+        );
+
+        let descs = mgr.build_enum_description();
+        assert_eq!(descs.len(), 1);
+        assert_eq!(descs[0].0, "active");
+    }
+
+    #[test]
+    fn test_disabled_agents_still_gettable() {
+        let mut mgr = SubagentManager::new();
+        mgr.register(
+            SubAgentSpec::new("disabled-agent", "Disabled", "prompt").with_disable(true),
+        );
+
+        // Disabled agents can still be looked up (but spawn will fail)
+        assert!(mgr.get("disabled-agent").is_some());
+    }
+
+    #[test]
+    fn test_disabled_agents_in_all_names() {
+        let mut mgr = SubagentManager::new();
+        mgr.register(
+            SubAgentSpec::new("disabled-agent", "Disabled", "prompt").with_disable(true),
+        );
+
+        let all = mgr.all_names();
+        assert!(
+            all.contains(&"disabled-agent"),
+            "all_names() should include disabled agents"
+        );
     }
 }

@@ -31,8 +31,8 @@ pub use react_loop::{IterationMetrics, ReactLoop, ReactLoopConfig, ToolCallMetri
 pub use response::ResponseCleaner;
 pub use skills::{LoadedSkill, SkillLoader, SkillMetadata, SkillSource};
 pub use subagents::{
-    NoopProgressCallback, SubAgentSpec, SubagentManager, SubagentProgressCallback,
-    SubagentRunResult, SubagentType,
+    NoopProgressCallback, PermissionAction, PermissionRule, SubAgentSpec, SubagentManager,
+    SubagentProgressCallback, SubagentRunResult, SubagentType,
 };
 pub use traits::{
     AgentDeps, AgentError, AgentEventCallback, AgentResult, BaseAgent, LlmResponse, TaskMonitor,
