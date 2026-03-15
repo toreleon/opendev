@@ -66,6 +66,11 @@ impl BaseTool for FileListTool {
                 "max_depth": {
                     "type": "number",
                     "description": "Maximum directory depth to recurse into (0 = base dir only)"
+                },
+                "ignore": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Additional glob patterns to exclude (e.g., [\"*.log\", \"temp/\"])"
                 }
             },
             "required": ["pattern"]
@@ -92,6 +97,17 @@ impl BaseTool for FileListTool {
             .get("max_depth")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
+
+        // Parse custom ignore patterns.
+        let custom_ignores: Vec<String> = args
+            .get("ignore")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         if let Err(msg) = validate_path_access(&base_dir, &ctx.working_dir) {
             return ToolResult::fail(msg);
@@ -127,6 +143,25 @@ impl BaseTool for FileListTool {
                             && is_excluded_path(rel)
                         {
                             continue;
+                        }
+                        // Apply custom ignore patterns.
+                        if !custom_ignores.is_empty()
+                            && let Ok(rel) = path.strip_prefix(&base_dir)
+                        {
+                            let rel_str = rel.to_string_lossy();
+                            let matched = custom_ignores.iter().any(|pat| {
+                                // Support directory patterns (ending with /) and glob patterns.
+                                if let Some(dir) = pat.strip_suffix('/') {
+                                    rel_str.starts_with(dir) || rel_str.contains(&format!("/{dir}/"))
+                                } else if let Ok(glob) = glob::Pattern::new(pat) {
+                                    glob.matches(&rel_str)
+                                } else {
+                                    rel_str.contains(pat.as_str())
+                                }
+                            });
+                            if matched {
+                                continue;
+                            }
                         }
                         // Apply max_depth filter: count components relative to base_dir
                         if let Some(depth) = max_depth
@@ -371,6 +406,29 @@ mod tests {
         assert!(is_excluded_path(Path::new("style.min.css")));
         assert!(!is_excluded_path(Path::new("src/main.rs")));
         assert!(!is_excluded_path(Path::new("lib.rs")));
+    }
+
+    #[tokio::test]
+    async fn test_list_files_custom_ignore() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("logs")).unwrap();
+        fs::write(tmp.path().join("app.rs"), "").unwrap();
+        fs::write(tmp.path().join("debug.log"), "").unwrap();
+        fs::write(tmp.path().join("logs/app.log"), "").unwrap();
+
+        let tool = FileListTool;
+        let ctx = ToolContext::new(tmp.path());
+        let args = make_args(&[
+            ("pattern", serde_json::json!("**/*")),
+            ("ignore", serde_json::json!(["*.log", "logs/"])),
+        ]);
+
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.success);
+        let output = result.output.unwrap();
+        assert!(output.contains("app.rs"));
+        assert!(!output.contains("debug.log"), "*.log should be ignored");
+        assert!(!output.contains("app.log"), "logs/ dir should be ignored");
     }
 
     #[tokio::test]
