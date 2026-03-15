@@ -140,8 +140,7 @@ pub const TOOLS_TOOL_INVOKE_SKILL: &str =
     include_str!("../../templates/tools/tool-invoke-skill.md");
 pub const TOOLS_TOOL_LIST_AGENTS: &str = include_str!("../../templates/tools/tool-list-agents.md");
 pub const TOOLS_TOOL_LIST_FILES: &str = include_str!("../../templates/tools/tool-list-files.md");
-pub const TOOLS_TOOL_MULTI_EDIT: &str =
-    include_str!("../../templates/tools/tool-multi-edit.md");
+pub const TOOLS_TOOL_MULTI_EDIT: &str = include_str!("../../templates/tools/tool-multi-edit.md");
 pub const TOOLS_TOOL_LIST_SESSIONS: &str =
     include_str!("../../templates/tools/tool-list-sessions.md");
 pub const TOOLS_TOOL_LIST_SUBAGENTS: &str =

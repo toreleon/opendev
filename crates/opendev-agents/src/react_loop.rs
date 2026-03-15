@@ -5,7 +5,7 @@
 //! and feeding results back to the LLM until it completes or is interrupted.
 
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Instant;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -14,6 +14,7 @@ use crate::agent_types::{AgentDefinition, PartialResult};
 use crate::doom_loop::{DoomLoopAction, DoomLoopDetector, RecoveryAction};
 use crate::llm_calls::LlmCaller;
 use crate::response::ResponseCleaner;
+use crate::subagents::spec::{PermissionAction, PermissionRule};
 use crate::traits::{AgentError, AgentResult, LlmResponse, TaskMonitor};
 use opendev_context::{ArtifactIndex, ContextCompactor, OptimizationLevel};
 use opendev_http::adapted_client::AdaptedClient;
@@ -151,6 +152,11 @@ pub struct ReactLoopConfig {
     /// Optional agent definition — when set, the loop uses the agent's
     /// thinking/critique model overrides and thinking level.
     pub agent_definition: Option<AgentDefinition>,
+    /// Per-agent permission rules for tool access control.
+    /// Maps tool name patterns to permission rules (allow/deny/ask).
+    /// When non-empty, each tool call is checked against these rules
+    /// before execution.
+    pub permission: HashMap<String, PermissionRule>,
 }
 
 impl Default for ReactLoopConfig {
@@ -163,6 +169,7 @@ impl Default for ReactLoopConfig {
             thinking_system_prompt: None,
             original_task: None,
             agent_definition: None,
+            permission: HashMap::new(),
         }
     }
 }
@@ -175,6 +182,50 @@ impl ReactLoopConfig {
         } else {
             self.thinking_level
         }
+    }
+
+    /// Evaluate permission rules for a tool call.
+    ///
+    /// Returns `None` if no rules match (caller decides default behavior).
+    /// `arg_pattern` is used for tools that have pattern-level rules (e.g. bash commands).
+    pub fn evaluate_permission(
+        &self,
+        tool_name: &str,
+        arg_pattern: &str,
+    ) -> Option<PermissionAction> {
+        use crate::subagents::spec::{glob_match, pattern_specificity};
+
+        if self.permission.is_empty() {
+            return None;
+        }
+
+        let mut best_match: Option<(PermissionAction, usize)> = None;
+
+        for (tool_pattern, rule) in &self.permission {
+            if !glob_match(tool_pattern, tool_name) {
+                continue;
+            }
+            match rule {
+                PermissionRule::Action(action) => {
+                    let specificity = pattern_specificity(tool_pattern);
+                    if best_match.as_ref().is_none_or(|(_, s)| specificity >= *s) {
+                        best_match = Some((*action, specificity));
+                    }
+                }
+                PermissionRule::Patterns(patterns) => {
+                    for (pattern, action) in patterns {
+                        if glob_match(pattern, arg_pattern) {
+                            let specificity = pattern_specificity(pattern);
+                            if best_match.as_ref().is_none_or(|(_, s)| specificity >= *s) {
+                                best_match = Some((*action, specificity));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        best_match.map(|(action, _)| action)
     }
 }
 
@@ -1087,8 +1138,121 @@ impl ReactLoop {
                             cb.on_tool_started(tool_call_id_str, tool_name, &args_map);
                         }
 
+                        // Per-agent permission enforcement.
+                        // For pattern-level rules (e.g. bash commands), use the
+                        // command argument as the arg_pattern.
+                        let mut permission_allows = false;
+                        if !self.config.permission.is_empty() {
+                            let arg_pattern = args_map
+                                .get("command")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if let Some(action) =
+                                self.config.evaluate_permission(tool_name, arg_pattern)
+                            {
+                                match action {
+                                    PermissionAction::Deny => {
+                                        debug!(
+                                            tool = tool_name,
+                                            "Tool call denied by permission rules"
+                                        );
+                                        let result_content = Self::format_tool_result(
+                                            tool_name,
+                                            &serde_json::json!({
+                                                "success": false,
+                                                "error": format!(
+                                                    "Permission denied: '{}' is not allowed by agent permission rules",
+                                                    tool_name
+                                                )
+                                            }),
+                                        );
+                                        messages.push(serde_json::json!({
+                                            "role": "tool",
+                                            "tool_call_id": tool_call_id_str,
+                                            "name": tool_name,
+                                            "content": result_content,
+                                        }));
+                                        if let Some(cb) = event_callback {
+                                            cb.on_tool_result(
+                                                tool_call_id_str,
+                                                tool_name,
+                                                "Permission denied by agent rules",
+                                                false,
+                                            );
+                                            cb.on_tool_finished(tool_call_id_str, false);
+                                        }
+                                        continue;
+                                    }
+                                    PermissionAction::Allow => {
+                                        // Explicitly allowed — skip the interactive approval
+                                        // gate below (even for run_command).
+                                        permission_allows = true;
+                                    }
+                                    PermissionAction::Ask => {
+                                        // For non-bash tools, route through the approval
+                                        // channel if available.
+                                        if tool_name != "run_command"
+                                            && let Some(approval_tx) = tool_approval_tx
+                                        {
+                                            let desc =
+                                                format!("{} {}", tool_name, arg_pattern);
+                                            let (resp_tx, resp_rx) =
+                                                tokio::sync::oneshot::channel();
+                                            let req = opendev_runtime::ToolApprovalRequest {
+                                                tool_name: tool_name.to_string(),
+                                                command: desc,
+                                                working_dir: tool_context
+                                                    .working_dir
+                                                    .display()
+                                                    .to_string(),
+                                                response_tx: resp_tx,
+                                            };
+                                            if approval_tx.send(req).is_ok() {
+                                                match resp_rx.await {
+                                                    Ok(d) if !d.approved => {
+                                                        let result_content =
+                                                            Self::format_tool_result(
+                                                                tool_name,
+                                                                &serde_json::json!({
+                                                                    "success": false,
+                                                                    "error": "Tool call denied by user"
+                                                                }),
+                                                            );
+                                                        messages.push(serde_json::json!({
+                                                            "role": "tool",
+                                                            "tool_call_id": tool_call_id_str,
+                                                            "name": tool_name,
+                                                            "content": result_content,
+                                                        }));
+                                                        if let Some(cb) = event_callback {
+                                                            cb.on_tool_result(
+                                                                tool_call_id_str,
+                                                                tool_name,
+                                                                "Tool call denied by user",
+                                                                false,
+                                                            );
+                                                            cb.on_tool_finished(
+                                                                tool_call_id_str,
+                                                                false,
+                                                            );
+                                                        }
+                                                        continue;
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                        // For run_command with Ask, fall through to the
+                                        // existing bash approval gate below.
+                                    }
+                                }
+                            }
+                        }
+
                         // Tool approval gate for bash/run_command
+                        // Skip if permission rules explicitly allow this tool.
                         if tool_name == "run_command"
+                            && !permission_allows
                             && let Some(approval_tx) = tool_approval_tx
                         {
                             let command = args_map
@@ -2276,5 +2440,118 @@ mod tests {
         // Messages should include the completed tool result
         assert_eq!(result.messages.len(), 2);
         assert_eq!(result.messages[1]["name"], "read_file");
+    }
+
+    // --- Permission enforcement tests ---
+
+    #[test]
+    fn test_evaluate_permission_empty_rules() {
+        let config = ReactLoopConfig::default();
+        assert!(config.evaluate_permission("run_command", "ls").is_none());
+    }
+
+    #[test]
+    fn test_evaluate_permission_blanket_deny() {
+        let mut config = ReactLoopConfig::default();
+        config.permission.insert(
+            "run_command".to_string(),
+            PermissionRule::Action(PermissionAction::Deny),
+        );
+        assert_eq!(
+            config.evaluate_permission("run_command", "ls"),
+            Some(PermissionAction::Deny)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_permission_blanket_allow() {
+        let mut config = ReactLoopConfig::default();
+        config.permission.insert(
+            "read_file".to_string(),
+            PermissionRule::Action(PermissionAction::Allow),
+        );
+        assert_eq!(
+            config.evaluate_permission("read_file", ""),
+            Some(PermissionAction::Allow)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_permission_wildcard_tool_pattern() {
+        let mut config = ReactLoopConfig::default();
+        config.permission.insert(
+            "*".to_string(),
+            PermissionRule::Action(PermissionAction::Ask),
+        );
+        assert_eq!(
+            config.evaluate_permission("write_file", ""),
+            Some(PermissionAction::Ask)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_permission_specific_overrides_wildcard() {
+        let mut config = ReactLoopConfig::default();
+        config.permission.insert(
+            "*".to_string(),
+            PermissionRule::Action(PermissionAction::Ask),
+        );
+        config.permission.insert(
+            "read_file".to_string(),
+            PermissionRule::Action(PermissionAction::Allow),
+        );
+        // Specific "read_file" should override wildcard "*"
+        assert_eq!(
+            config.evaluate_permission("read_file", ""),
+            Some(PermissionAction::Allow)
+        );
+        // Wildcard still applies to other tools
+        assert_eq!(
+            config.evaluate_permission("write_file", ""),
+            Some(PermissionAction::Ask)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_permission_pattern_rules() {
+        let mut patterns = HashMap::new();
+        patterns.insert("*".to_string(), PermissionAction::Ask);
+        patterns.insert("git *".to_string(), PermissionAction::Allow);
+        patterns.insert("rm -rf *".to_string(), PermissionAction::Deny);
+
+        let mut config = ReactLoopConfig::default();
+        config
+            .permission
+            .insert("run_command".to_string(), PermissionRule::Patterns(patterns));
+
+        assert_eq!(
+            config.evaluate_permission("run_command", "git status"),
+            Some(PermissionAction::Allow)
+        );
+        assert_eq!(
+            config.evaluate_permission("run_command", "rm -rf /"),
+            Some(PermissionAction::Deny)
+        );
+        assert_eq!(
+            config.evaluate_permission("run_command", "ls -la"),
+            Some(PermissionAction::Ask)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_permission_no_match() {
+        let mut config = ReactLoopConfig::default();
+        config.permission.insert(
+            "run_command".to_string(),
+            PermissionRule::Action(PermissionAction::Deny),
+        );
+        // Different tool should not match
+        assert!(config.evaluate_permission("read_file", "").is_none());
+    }
+
+    #[test]
+    fn test_default_config_has_empty_permissions() {
+        let config = ReactLoopConfig::default();
+        assert!(config.permission.is_empty());
     }
 }

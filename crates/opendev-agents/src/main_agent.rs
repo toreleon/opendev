@@ -17,6 +17,60 @@ use crate::react_loop::{ReactLoop, ReactLoopConfig};
 use crate::response::ResponseCleaner;
 use crate::traits::{AgentDeps, AgentError, AgentResult, BaseAgent, LlmResponse, TaskMonitor};
 
+/// Simple glob matching for tool name patterns.
+///
+/// Supports `*` (matches zero or more characters) and `?` (matches exactly one character).
+/// This is intentionally simple — no `**` or character classes needed for tool names.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    glob_match_inner(&p, &n, 0, 0)
+}
+
+fn glob_match_inner(pattern: &[char], name: &[char], pi: usize, ni: usize) -> bool {
+    let mut pi = pi;
+    let mut ni = ni;
+
+    while pi < pattern.len() {
+        match pattern[pi] {
+            '*' => {
+                // Skip consecutive *
+                while pi < pattern.len() && pattern[pi] == '*' {
+                    pi += 1;
+                }
+                // * at end matches everything
+                if pi == pattern.len() {
+                    return true;
+                }
+                // Try matching * against 0..n characters
+                while ni <= name.len() {
+                    if glob_match_inner(pattern, name, pi, ni) {
+                        return true;
+                    }
+                    ni += 1;
+                }
+                return false;
+            }
+            '?' => {
+                if ni >= name.len() {
+                    return false;
+                }
+                pi += 1;
+                ni += 1;
+            }
+            c => {
+                if ni >= name.len() || name[ni] != c {
+                    return false;
+                }
+                pi += 1;
+                ni += 1;
+            }
+        }
+    }
+
+    ni == name.len()
+}
+
 /// Configuration for the MainAgent.
 #[derive(Debug, Clone)]
 pub struct MainAgentConfig {
@@ -137,6 +191,9 @@ impl MainAgent {
     }
 
     /// Build tool schemas, optionally filtering to allowed tools only.
+    ///
+    /// Tool patterns support wildcards: `"read_*"` matches `read_file`, `read_pdf`, etc.
+    /// `"mcp__*"` matches all MCP tools. Exact names also work: `"read_file"`.
     fn build_schemas(registry: &ToolRegistry, allowed_tools: Option<&[String]>) -> Vec<Value> {
         let all_schemas = registry.get_schemas();
         match allowed_tools {
@@ -148,7 +205,14 @@ impl MainAgent {
                         .and_then(|f| f.get("name"))
                         .and_then(|n| n.as_str())
                         .unwrap_or("");
-                    allowed.iter().any(|a| a == name)
+                    allowed.iter().any(|pattern| {
+                        if pattern.contains('*') || pattern.contains('?') {
+                            // Glob-style matching
+                            glob_match(pattern, name)
+                        } else {
+                            pattern == name
+                        }
+                    })
                 })
                 .collect(),
             None => all_schemas,
@@ -569,5 +633,52 @@ mod tests {
         let http = AdaptedClient::new(raw);
         let agent = make_agent().with_http_client(Arc::new(http));
         assert!(agent.require_http_client().is_ok());
+    }
+
+    // ---- Glob matching ----
+
+    #[test]
+    fn test_glob_match_exact() {
+        assert!(glob_match("read_file", "read_file"));
+        assert!(!glob_match("read_file", "write_file"));
+    }
+
+    #[test]
+    fn test_glob_match_star_suffix() {
+        assert!(glob_match("read_*", "read_file"));
+        assert!(glob_match("read_*", "read_pdf"));
+        assert!(!glob_match("read_*", "write_file"));
+    }
+
+    #[test]
+    fn test_glob_match_star_prefix() {
+        assert!(glob_match("*_file", "read_file"));
+        assert!(glob_match("*_file", "write_file"));
+        assert!(!glob_match("*_file", "search"));
+    }
+
+    #[test]
+    fn test_glob_match_star_middle() {
+        assert!(glob_match("mcp__*__tool", "mcp__server__tool"));
+        assert!(!glob_match("mcp__*__tool", "mcp__server__other"));
+    }
+
+    #[test]
+    fn test_glob_match_star_all() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*", ""));
+    }
+
+    #[test]
+    fn test_glob_match_question_mark() {
+        assert!(glob_match("read_???e", "read_file"));
+        assert!(!glob_match("read_???e", "read_fi"));
+    }
+
+    #[test]
+    fn test_glob_match_mcp_wildcard() {
+        assert!(glob_match("mcp__*", "mcp__github__create_pr"));
+        assert!(glob_match("mcp__*", "mcp__slack__send"));
+        assert!(!glob_match("mcp__*", "read_file"));
     }
 }
