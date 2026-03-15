@@ -139,24 +139,59 @@ impl SubagentManager {
 
     /// Create a manager with built-in specs plus custom agents loaded from disk.
     ///
-    /// Scans agent directories in priority order (first = highest priority):
-    /// - `{working_dir}/.claude/agents/`
-    /// - `{working_dir}/.opendev/agents/`
-    /// - `~/.claude/agents/`
-    /// - `~/.opendev/agents/`
+    /// Scans agent directories from lowest to highest priority:
+    /// 1. Global: `~/.opendev/agents/`, `~/.agents/agents/`, `~/.claude/agents/`
+    /// 2. Walk from git root down to working_dir: `.opendev/agents/`, `.agents/agents/`,
+    ///    `.claude/agents/` at each level (monorepo support)
     ///
     /// Custom agents override built-ins with the same name.
     pub fn with_builtins_and_custom(working_dir: &std::path::Path) -> Self {
         let mut mgr = Self::with_builtins();
         let home = dirs::home_dir().unwrap_or_default();
+
+        // Determine git root for monorepo walking
+        let git_root = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(working_dir)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| std::path::PathBuf::from(s.trim()))
+            });
+        let stop_dir = git_root.as_deref().unwrap_or(working_dir);
+
         // Order: lowest priority first (later register() calls override earlier).
-        // Global dirs load first, then project dirs override, .claude overrides .opendev.
-        let dirs = vec![
-            home.join(".opendev").join("agents"),
-            home.join(".claude").join("agents"),
-            working_dir.join(".opendev").join("agents"),
-            working_dir.join(".claude").join("agents"),
-        ];
+        let mut dirs = Vec::new();
+
+        // 1. Global dirs (lowest priority)
+        for subdir in &[".opendev", ".agents", ".claude"] {
+            dirs.push(home.join(subdir).join("agents"));
+        }
+
+        // 2. Walk from working_dir up to git root, collect directory levels
+        //    Parent dirs have lower priority than child dirs.
+        //    Within each level: .opendev < .agents < .claude
+        let mut levels: Vec<std::path::PathBuf> = Vec::new();
+        {
+            let mut current = working_dir.to_path_buf();
+            loop {
+                levels.push(current.clone());
+                if current == stop_dir || !current.pop() {
+                    break;
+                }
+            }
+        }
+        // Reverse so parent dirs (lower priority) load first, working_dir loads last
+        levels.reverse();
+        for level in &levels {
+            for subdir in &[".opendev", ".agents", ".claude"] {
+                dirs.push(level.join(subdir).join("agents"));
+            }
+        }
+
         for spec in super::custom_loader::load_custom_agents(&dirs) {
             mgr.register(spec);
         }
@@ -571,6 +606,57 @@ mod tests {
         let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
         assert!(mgr.len() >= 4); // 3 builtins + 1 custom
         assert!(mgr.get("test-agent").is_some());
+    }
+
+    #[test]
+    fn test_agents_from_dot_agents_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_dir = tmp.path().join(".agents").join("agents");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("reviewer.md"),
+            "---\ndescription: Code reviewer from .agents\n---\nYou review code.",
+        )
+        .unwrap();
+
+        let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
+        assert!(mgr.get("reviewer").is_some());
+        let spec = mgr.get("reviewer").unwrap();
+        assert!(spec.system_prompt.contains("review code"));
+    }
+
+    #[test]
+    fn test_agent_priority_claude_over_agents_over_opendev() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create same-named agent in all three dirs
+        let opendev_dir = tmp.path().join(".opendev").join("agents");
+        let agents_dir = tmp.path().join(".agents").join("agents");
+        let claude_dir = tmp.path().join(".claude").join("agents");
+        std::fs::create_dir_all(&opendev_dir).unwrap();
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        std::fs::write(
+            opendev_dir.join("shared.md"),
+            "---\ndescription: From .opendev\n---\nOpenDev version.",
+        )
+        .unwrap();
+        std::fs::write(
+            agents_dir.join("shared.md"),
+            "---\ndescription: From .agents\n---\nAgents version.",
+        )
+        .unwrap();
+        std::fs::write(
+            claude_dir.join("shared.md"),
+            "---\ndescription: From .claude\n---\nClaude version.",
+        )
+        .unwrap();
+
+        let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
+        let spec = mgr.get("shared").unwrap();
+        // .claude has highest priority
+        assert_eq!(spec.description, "From .claude");
     }
 
     #[test]
