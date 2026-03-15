@@ -412,3 +412,118 @@ fn registry_list_all_models_with_filters() {
     assert_eq!(vision.len(), 1);
     assert_eq!(vision[0].1.id, "expensive");
 }
+
+// ========================================================================
+// Instructions array merge
+// ========================================================================
+
+/// Instructions arrays are concatenated and deduplicated across config layers.
+#[test]
+fn config_instructions_merge_concat_dedup() {
+    let tmp = TempDir::new().unwrap();
+    let global = tmp.path().join("global.json");
+    let project = tmp.path().join("project.json");
+
+    std::fs::write(
+        &global,
+        r#"{"instructions": ["CONTRIBUTING.md", "docs/rules.md"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &project,
+        r#"{"instructions": ["docs/rules.md", "project-rules.md"]}"#,
+    )
+    .unwrap();
+
+    let config = ConfigLoader::load(&global, &project).unwrap();
+    // Should have all unique entries: CONTRIBUTING.md, docs/rules.md, project-rules.md
+    assert_eq!(config.instructions.len(), 3);
+    assert!(config.instructions.contains(&"CONTRIBUTING.md".to_string()));
+    assert!(config.instructions.contains(&"docs/rules.md".to_string()));
+    assert!(config.instructions.contains(&"project-rules.md".to_string()));
+}
+
+/// When only one layer has instructions, they're preserved as-is.
+#[test]
+fn config_instructions_single_layer() {
+    let tmp = TempDir::new().unwrap();
+    let global = tmp.path().join("global.json");
+    let project = tmp.path().join("project.json");
+
+    std::fs::write(
+        &global,
+        r#"{"instructions": ["global-rules.md"]}"#,
+    )
+    .unwrap();
+    // No project config
+    let config = ConfigLoader::load(&global, &project).unwrap();
+    assert_eq!(config.instructions, vec!["global-rules.md"]);
+}
+
+/// When neither layer has instructions, the field is empty.
+#[test]
+fn config_instructions_empty_default() {
+    let tmp = TempDir::new().unwrap();
+    let global = tmp.path().join("global.json");
+    let project = tmp.path().join("project.json");
+
+    let config = ConfigLoader::load(&global, &project).unwrap();
+    assert!(config.instructions.is_empty());
+}
+
+// ========================================================================
+// Skill paths array merge
+// ========================================================================
+
+/// Skill paths arrays are concatenated and deduplicated across config layers.
+#[test]
+fn config_skill_paths_merge_concat_dedup() {
+    let tmp = TempDir::new().unwrap();
+    let global = tmp.path().join("global.json");
+    let project = tmp.path().join("project.json");
+
+    std::fs::write(
+        &global,
+        r#"{"skill_paths": ["~/.custom/skills", "/opt/skills"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &project,
+        r#"{"skill_paths": ["/opt/skills", "project-skills"]}"#,
+    )
+    .unwrap();
+
+    let config = ConfigLoader::load(&global, &project).unwrap();
+    assert_eq!(config.skill_paths.len(), 3);
+    assert!(config.skill_paths.contains(&"~/.custom/skills".to_string()));
+    assert!(config.skill_paths.contains(&"/opt/skills".to_string()));
+    assert!(config.skill_paths.contains(&"project-skills".to_string()));
+}
+
+/// When only one layer has skill_paths, they're preserved as-is.
+#[test]
+fn config_skill_paths_single_layer() {
+    let tmp = TempDir::new().unwrap();
+    let global = tmp.path().join("global.json");
+    let project = tmp.path().join("project.json");
+
+    std::fs::write(
+        &global,
+        r#"{"skill_paths": ["~/.opendev/extra-skills"]}"#,
+    )
+    .unwrap();
+
+    let config = ConfigLoader::load(&global, &project).unwrap();
+    assert_eq!(config.skill_paths, vec!["~/.opendev/extra-skills"]);
+}
+
+/// When neither layer has skill_paths, the field is empty.
+#[test]
+fn config_skill_paths_empty_default() {
+    let tmp = TempDir::new().unwrap();
+    let global = tmp.path().join("global.json");
+    let project = tmp.path().join("project.json");
+
+    let config = ConfigLoader::load(&global, &project).unwrap();
+    assert!(config.skill_paths.is_empty());
+}

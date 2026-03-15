@@ -351,9 +351,17 @@ pub struct AppConfig {
     #[serde(default = "default_plan_mode_explore_variant")]
     pub plan_mode_explore_variant: String,
 
-    // Custom instructions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instructions: Option<String>,
+    // Custom instructions — file paths, glob patterns, or `~/` paths
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<String>,
+
+    // Additional skill directories — file paths or `~/` paths
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_paths: Vec<String>,
+
+    // Remote URLs to discover skills from (fetches index.json)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_urls: Vec<String>,
 
     // Model variants
     #[serde(default)]
@@ -437,7 +445,9 @@ impl Default for AppConfig {
             plan_mode_explore_agent_count: 3,
             plan_mode_plan_agent_count: 1,
             plan_mode_explore_variant: "enabled".to_string(),
-            instructions: None,
+            instructions: Vec::new(),
+            skill_paths: Vec::new(),
+            skill_urls: Vec::new(),
             model_variants: HashMap::new(),
             config_version: default_config_version(),
         }
