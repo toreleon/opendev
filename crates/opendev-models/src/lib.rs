@@ -16,8 +16,8 @@ pub mod validator;
 
 // Re-export commonly used types at crate root
 pub use config::{
-    AppConfig, AutoModeConfig, ModelVariant, OperationConfig, PermissionConfig, PlaybookConfig,
-    PlaybookScoringWeights, ToolPermission,
+    AgentConfigInline, AppConfig, AutoModeConfig, ModelVariant, OperationConfig, PermissionConfig,
+    PlaybookConfig, PlaybookScoringWeights, ToolPermission,
 };
 pub use file_change::{FileChange, FileChangeType};
 pub use message::{ChatMessage, InputProvenance, ProvenanceKind, Role, ToolCall};

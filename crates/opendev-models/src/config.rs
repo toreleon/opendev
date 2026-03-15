@@ -257,6 +257,48 @@ fn default_max_tokens() -> u32 {
     16384
 }
 
+/// Inline agent configuration from opendev.json.
+///
+/// Allows defining new agents or overriding builtin agents directly
+/// in the config file. All fields are optional — only specified fields
+/// are applied as overrides.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentConfigInline {
+    /// Model override (e.g. "gpt-4o", "claude-opus-4-5").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// System prompt override or addition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Description of when to use this agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Temperature override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    /// Top-p override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    /// Max iterations (steps) for the react loop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<usize>,
+    /// Agent mode: "primary", "subagent", or "all".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Display color (hex string like "#FF6600").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Hide from autocomplete listings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
+    /// Disable/remove this agent entirely.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable: Option<bool>,
+    /// Per-tool permission rules (tool pattern → "allow"/"deny"/"ask").
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub permission: HashMap<String, String>,
+}
+
 /// Application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -367,6 +409,12 @@ pub struct AppConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent: Option<String>,
 
+    // Inline agent definitions/overrides from config.
+    // Keys are agent identifiers (e.g. "build", "explore", or custom names).
+    // Overrides merge onto builtin agents; new keys create custom agents.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agents: HashMap<String, AgentConfigInline>,
+
     // Model variants
     #[serde(default)]
     pub model_variants: HashMap<String, ModelVariant>,
@@ -453,6 +501,7 @@ impl Default for AppConfig {
             skill_paths: Vec::new(),
             skill_urls: Vec::new(),
             default_agent: None,
+            agents: HashMap::new(),
             model_variants: HashMap::new(),
             config_version: default_config_version(),
         }

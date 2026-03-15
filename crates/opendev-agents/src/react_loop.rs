@@ -684,6 +684,11 @@ impl ReactLoop {
         // frontmatter, use that model for subsequent iterations until reset.
         let mut skill_model_override: Option<String> = None;
 
+        // Session-level auto-approved tool patterns. When a user approves a
+        // tool invocation with "yes_remember", the tool:args pattern is added
+        // here so future identical invocations skip the approval prompt.
+        let mut auto_approved_patterns: std::collections::HashSet<String> = std::collections::HashSet::new();
+
         // Nudge/reminder state tracking
         let mut todo_nudge_count: usize = 0;
         let mut all_todos_complete_nudged = false;
@@ -1275,11 +1280,14 @@ impl ReactLoop {
                         // Tool approval gate for bash/run_command and MCP tools.
                         // MCP tools (mcp__*) are external and should require approval
                         // by default, same as run_command.
-                        // Skip if permission rules explicitly allow this tool.
+                        // Skip if permission rules explicitly allow this tool,
+                        // or if the user previously approved this tool with "always".
                         let needs_approval_gate = tool_name == "run_command"
                             || tool_name.starts_with("mcp__");
+                        let auto_approved = auto_approved_patterns.contains(tool_name);
                         if needs_approval_gate
                             && !permission_allows
+                            && !auto_approved
                             && let Some(approval_tx) = tool_approval_tx
                         {
                             let command = if tool_name == "run_command" {
@@ -1327,6 +1335,11 @@ impl ReactLoop {
                                         continue;
                                     }
                                     Ok(d) => {
+                                        // "yes_remember" — auto-approve this tool for rest of session
+                                        if d.choice == "yes_remember" {
+                                            auto_approved_patterns.insert(tool_name.to_string());
+                                            debug!(tool = tool_name, "Auto-approving tool for remainder of session");
+                                        }
                                         // Update command if edited by user
                                         if d.command != command {
                                             args_map.insert(

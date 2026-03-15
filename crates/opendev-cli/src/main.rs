@@ -68,6 +68,14 @@ struct Cli {
     #[arg(long, value_name = "PROFILE")]
     profile: Option<String>,
 
+    /// Set the session title (for non-interactive mode).
+    #[arg(long, value_name = "TITLE")]
+    title: Option<String>,
+
+    /// Select which agent handles the session (e.g. "general", "explore").
+    #[arg(long, value_name = "AGENT")]
+    agent: Option<String>,
+
     /// Replay a recorded event JSONL file for debugging.
     /// Record events by setting OPENDEV_DEBUG_EVENTS=1.
     #[arg(long, value_name = "JSONL_FILE")]
@@ -408,6 +416,8 @@ async fn main() {
                     &prompt,
                     cli.continue_session,
                     cli.resume.as_ref().and_then(|r| r.as_deref()),
+                    cli.title.as_deref(),
+                    cli.agent.as_deref(),
                 )
                 .await;
             } else {
@@ -792,6 +802,8 @@ async fn run_non_interactive(
     prompt: &str,
     continue_session: bool,
     resume_id: Option<&str>,
+    title: Option<&str>,
+    agent: Option<&str>,
 ) {
     use opendev_history::{SessionListing, SessionManager};
 
@@ -802,7 +814,7 @@ async fn run_non_interactive(
     let config = load_app_config(working_dir);
 
     // First-run detection: if no settings file exists, run setup wizard
-    let config = if !setup::config_exists() {
+    let mut config = if !setup::config_exists() {
         println!("No configuration found. Starting first-time setup...");
         match setup::run_setup_wizard().await {
             Ok(wizard_config) => wizard_config,
@@ -849,6 +861,16 @@ async fn run_non_interactive(
         }
     } else {
         session_manager.create_session();
+    }
+
+    // Apply --title flag: set session title immediately
+    if let Some(t) = title {
+        session_manager.set_metadata("title", t);
+    }
+
+    // Apply --agent flag: set default agent override in config
+    if let Some(a) = agent {
+        config.default_agent = Some(a.to_string());
     }
 
     let mut agent_runtime = match runtime::AgentRuntime::new(config, working_dir, session_manager) {

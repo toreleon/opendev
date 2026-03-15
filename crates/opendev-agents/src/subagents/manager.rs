@@ -163,6 +163,81 @@ impl SubagentManager {
         mgr
     }
 
+    /// Apply inline agent config overrides from `opendev.json`.
+    ///
+    /// For each entry in the config map:
+    /// - If `disable: true`, removes the agent entirely
+    /// - If the agent exists, merges the overrides onto it
+    /// - If the agent doesn't exist, creates a new custom agent
+    pub fn apply_config_overrides(
+        &mut self,
+        overrides: &std::collections::HashMap<String, opendev_models::AgentConfigInline>,
+    ) {
+        use super::spec::PermissionAction;
+
+        for (name, cfg) in overrides {
+            // Handle disable
+            if cfg.disable == Some(true) {
+                if self.specs.remove(name).is_some() {
+                    info!(agent = name, "Disabled agent via config override");
+                }
+                continue;
+            }
+
+            let spec = self.specs.entry(name.clone()).or_insert_with(|| {
+                info!(agent = name, "Creating new agent from config");
+                SubAgentSpec::new(
+                    name,
+                    cfg.description.as_deref().unwrap_or("Custom agent"),
+                    cfg.prompt.as_deref().unwrap_or("You are a helpful assistant."),
+                )
+            });
+
+            // Apply overrides
+            if let Some(ref model) = cfg.model {
+                spec.model = Some(model.clone());
+            }
+            if let Some(ref prompt) = cfg.prompt {
+                spec.system_prompt = prompt.clone();
+            }
+            if let Some(ref desc) = cfg.description {
+                spec.description = desc.clone();
+            }
+            if let Some(temp) = cfg.temperature {
+                spec.temperature = Some(temp as f32);
+            }
+            if let Some(top_p) = cfg.top_p {
+                spec.top_p = Some(top_p as f32);
+            }
+            if let Some(steps) = cfg.max_steps {
+                spec.max_steps = Some(steps as u32);
+            }
+            if let Some(ref color) = cfg.color {
+                spec.color = Some(color.clone());
+            }
+            if let Some(hidden) = cfg.hidden {
+                spec.hidden = hidden;
+            }
+            if let Some(ref mode) = cfg.mode {
+                spec.mode = super::spec::AgentMode::parse_mode(mode);
+            }
+
+            // Merge permissions (config overrides existing)
+            for (tool_pattern, action_str) in &cfg.permission {
+                let action = match action_str.as_str() {
+                    "allow" => PermissionAction::Allow,
+                    "deny" => PermissionAction::Deny,
+                    "ask" => PermissionAction::Ask,
+                    _ => continue,
+                };
+                spec.permission.insert(
+                    tool_pattern.clone(),
+                    super::spec::PermissionRule::Action(action),
+                );
+            }
+        }
+    }
+
     /// Register a subagent specification.
     pub fn register(&mut self, spec: SubAgentSpec) {
         self.specs.insert(spec.name.clone(), spec);

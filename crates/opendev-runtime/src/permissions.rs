@@ -39,10 +39,106 @@ pub struct PermissionRuleSet {
     rules: Vec<PermissionRule>,
 }
 
+/// Check whether a file path points to a sensitive file that should be denied by default.
+///
+/// Returns `true` for `.env`, `.env.*` (but NOT `.env.example`), and other credential files.
+pub fn is_sensitive_file(path: &str) -> bool {
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    let lower = filename.to_lowercase();
+
+    // .env and .env.* (but allow .env.example, .env.sample, .env.template)
+    if lower == ".env" {
+        return true;
+    }
+    if let Some(suffix) = lower.strip_prefix(".env.") {
+        return !matches!(suffix, "example" | "sample" | "template");
+    }
+
+    // Other common credential files
+    matches!(
+        lower.as_str(),
+        "credentials.json"
+            | "service-account.json"
+            | "id_rsa"
+            | "id_ed25519"
+            | ".npmrc"
+            | ".pypirc"
+    )
+}
+
 impl PermissionRuleSet {
     /// Create an empty rule set.
     pub fn new() -> Self {
         Self { rules: Vec::new() }
+    }
+
+    /// Create a rule set with built-in security defaults.
+    ///
+    /// Includes auto-deny for reading/writing `.env` files and other credential files,
+    /// while allowing `.env.example`.
+    pub fn with_defaults() -> Self {
+        let mut rs = Self::new();
+
+        // Deny reading sensitive env files (high priority)
+        rs.add_rule(PermissionRule {
+            pattern: "read_file:*.env".into(),
+            action: PermissionAction::Deny,
+            priority: 1000,
+            directory_scope: None,
+        });
+        rs.add_rule(PermissionRule {
+            pattern: "read_file:*.env.*".into(),
+            action: PermissionAction::Deny,
+            priority: 1000,
+            directory_scope: None,
+        });
+        // Allow .env.example specifically (higher priority overrides deny)
+        rs.add_rule(PermissionRule {
+            pattern: "read_file:*.env.example".into(),
+            action: PermissionAction::Allow,
+            priority: 1001,
+            directory_scope: None,
+        });
+        rs.add_rule(PermissionRule {
+            pattern: "read_file:*.env.sample".into(),
+            action: PermissionAction::Allow,
+            priority: 1001,
+            directory_scope: None,
+        });
+        rs.add_rule(PermissionRule {
+            pattern: "read_file:*.env.template".into(),
+            action: PermissionAction::Allow,
+            priority: 1001,
+            directory_scope: None,
+        });
+
+        // Deny editing/writing sensitive env files
+        rs.add_rule(PermissionRule {
+            pattern: "edit_file:*.env".into(),
+            action: PermissionAction::Deny,
+            priority: 1000,
+            directory_scope: None,
+        });
+        rs.add_rule(PermissionRule {
+            pattern: "edit_file:*.env.*".into(),
+            action: PermissionAction::Deny,
+            priority: 1000,
+            directory_scope: None,
+        });
+        rs.add_rule(PermissionRule {
+            pattern: "write_file:*.env".into(),
+            action: PermissionAction::Deny,
+            priority: 1000,
+            directory_scope: None,
+        });
+        rs.add_rule(PermissionRule {
+            pattern: "write_file:*.env.*".into(),
+            action: PermissionAction::Deny,
+            priority: 1000,
+            directory_scope: None,
+        });
+
+        rs
     }
 
     /// Add a rule to the set.
@@ -367,6 +463,74 @@ mod tests {
             rs.evaluate_simple("bash", "sudo rm -rf /"),
             Some(PermissionAction::Prompt)
         );
+    }
+
+    // ---- sensitive file detection tests ----
+
+    #[test]
+    fn test_is_sensitive_file() {
+        // .env files
+        assert!(is_sensitive_file(".env"));
+        assert!(is_sensitive_file("/path/to/.env"));
+        assert!(is_sensitive_file(".env.local"));
+        assert!(is_sensitive_file(".env.production"));
+        assert!(is_sensitive_file("/app/.env.staging"));
+
+        // Allowed .env variants
+        assert!(!is_sensitive_file(".env.example"));
+        assert!(!is_sensitive_file(".env.sample"));
+        assert!(!is_sensitive_file(".env.template"));
+
+        // Other credential files
+        assert!(is_sensitive_file("credentials.json"));
+        assert!(is_sensitive_file("id_rsa"));
+        assert!(is_sensitive_file("id_ed25519"));
+        assert!(is_sensitive_file(".npmrc"));
+        assert!(is_sensitive_file(".pypirc"));
+
+        // Non-sensitive files
+        assert!(!is_sensitive_file("main.rs"));
+        assert!(!is_sensitive_file("Cargo.toml"));
+        assert!(!is_sensitive_file("README.md"));
+        assert!(!is_sensitive_file(".envrc")); // not .env
+    }
+
+    // ---- default rules tests ----
+
+    #[test]
+    fn test_defaults_deny_env_files() {
+        let rs = PermissionRuleSet::with_defaults();
+
+        // .env denied
+        assert_eq!(
+            rs.evaluate_simple("read_file", "/app/.env"),
+            Some(PermissionAction::Deny)
+        );
+        assert_eq!(
+            rs.evaluate_simple("read_file", "/app/.env.local"),
+            Some(PermissionAction::Deny)
+        );
+        assert_eq!(
+            rs.evaluate_simple("edit_file", ".env"),
+            Some(PermissionAction::Deny)
+        );
+        assert_eq!(
+            rs.evaluate_simple("write_file", "/app/.env.production"),
+            Some(PermissionAction::Deny)
+        );
+
+        // .env.example allowed
+        assert_eq!(
+            rs.evaluate_simple("read_file", "/app/.env.example"),
+            Some(PermissionAction::Allow)
+        );
+        assert_eq!(
+            rs.evaluate_simple("read_file", ".env.sample"),
+            Some(PermissionAction::Allow)
+        );
+
+        // Normal files unaffected
+        assert_eq!(rs.evaluate_simple("read_file", "main.rs"), None);
     }
 
     #[test]

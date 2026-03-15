@@ -429,9 +429,18 @@ impl AgentRuntime {
 
         // Register SpawnSubagentTool now that we have Arc<ToolRegistry> and Arc<HttpClient>
         let session_dir = session_manager.session_dir().to_path_buf();
-        let subagent_manager = Arc::new(opendev_agents::SubagentManager::with_builtins_and_custom(
+        let mut subagent_manager = opendev_agents::SubagentManager::with_builtins_and_custom(
             working_dir,
-        ));
+        );
+        // Apply inline agent config overrides from opendev.json
+        if !config.agents.is_empty() {
+            subagent_manager.apply_config_overrides(&config.agents);
+            info!(
+                overrides = config.agents.len(),
+                "Applied inline agent config overrides"
+            );
+        }
+        let subagent_manager = Arc::new(subagent_manager);
         tool_registry.register(Arc::new(SpawnSubagentTool::new(
             subagent_manager,
             Arc::clone(&tool_registry),
