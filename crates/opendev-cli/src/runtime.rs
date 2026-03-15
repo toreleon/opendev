@@ -611,6 +611,7 @@ impl AgentRuntime {
             values: HashMap::new(),
             timeout_config: None,
             cancel_token: interrupt_token.map(|t| t.child_token()),
+            diagnostic_provider: None,
         };
 
         // Step 6: Set thinking context for this query

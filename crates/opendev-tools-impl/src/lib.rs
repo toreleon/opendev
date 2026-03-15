@@ -31,6 +31,7 @@ pub mod batch;
 pub mod browser;
 pub mod clear_todos;
 pub mod complete_todo;
+pub mod diagnostics_helper;
 pub mod diff_preview;
 pub mod edit_replacers;
 pub mod file_edit;

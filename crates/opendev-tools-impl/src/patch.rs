@@ -5,6 +5,8 @@ use std::path::Path;
 
 use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
 
+use crate::diagnostics_helper;
+
 /// Tool for applying unified diff patches.
 #[derive(Debug)]
 pub struct PatchTool;
@@ -51,18 +53,35 @@ impl BaseTool for PatchTool {
         let cwd = &ctx.working_dir;
 
         // Detect structured patch format (*** Begin Patch)
-        if is_structured_patch(patch_content) {
-            return apply_structured_patch(patch_content, cwd);
+        let mut result = if is_structured_patch(patch_content) {
+            apply_structured_patch(patch_content, cwd)
+        } else {
+            // Try git apply first
+            let git_result = try_git_apply(patch_content, cwd, strip).await;
+            if git_result.success {
+                git_result
+            } else {
+                // Fall back to manual patch application
+                apply_patch_manually(patch_content, cwd, strip)
+            }
+        };
+
+        // Collect LSP diagnostics for modified files after successful patch
+        if result.success
+            && let Some(output) = &result.output.clone()
+        {
+            let modified_files = extract_modified_files(output, cwd);
+            let paths: Vec<&Path> = modified_files.iter().map(|p| p.as_path()).collect();
+            if !paths.is_empty()
+                && let Some(diag_output) =
+                    diagnostics_helper::collect_multi_file_diagnostics(ctx, &paths).await
+                && let Some(ref mut out) = result.output
+            {
+                out.push_str(&diag_output);
+            }
         }
 
-        // Try git apply first
-        let result = try_git_apply(patch_content, cwd, strip).await;
-        if result.success {
-            return result;
-        }
-
-        // Fall back to manual patch application
-        apply_patch_manually(patch_content, cwd, strip)
+        result
     }
 }
 
@@ -482,6 +501,29 @@ fn apply_structured_patch(patch: &str, cwd: &Path) -> ToolResult {
         summary.len(),
         summary.join("\n")
     ))
+}
+
+/// Extract modified file paths from patch tool output.
+///
+/// Parses output messages like "A path", "M path", "D path" from structured
+/// patches, or file lists from manual patches.
+fn extract_modified_files(output: &str, cwd: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        // Structured patch output: "A path", "M path", "R old -> new"
+        if let Some(path) = trimmed.strip_prefix("A ")
+            .or_else(|| trimmed.strip_prefix("M "))
+        {
+            files.push(cwd.join(path.trim()));
+        } else if let Some(rest) = trimmed.strip_prefix("R ") {
+            // Move: "R old -> new" — the new file is the one that exists
+            if let Some((_, new_path)) = rest.split_once(" -> ") {
+                files.push(cwd.join(new_path.trim()));
+            }
+        }
+    }
+    files
 }
 
 /// Ensure the parent directory of a path exists.

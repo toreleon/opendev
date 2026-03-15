@@ -5,6 +5,7 @@ use std::path::Path;
 
 use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
 
+use crate::diagnostics_helper;
 use crate::formatter;
 use crate::path_utils::{resolve_file_path, validate_path_access};
 
@@ -94,7 +95,7 @@ impl BaseTool for FileWriteTool {
             return ToolResult::fail(format!("Failed to write temp file: {e}"));
         }
 
-        if let Err(e) = std::fs::rename(&tmp_path, path) {
+        if let Err(e) = std::fs::rename(&tmp_path, &path) {
             // Clean up temp file on rename failure
             let _ = std::fs::remove_file(&tmp_path);
             return ToolResult::fail(format!("Failed to rename temp file: {e}"));
@@ -114,10 +115,16 @@ impl BaseTool for FileWriteTool {
         }
 
         let fmt_note = if formatted { " (formatted)" } else { "" };
-        ToolResult::ok_with_metadata(
-            format!("Wrote {bytes} bytes ({lines} lines) to {file_path}{fmt_note}"),
-            metadata,
-        )
+        let mut output = format!("Wrote {bytes} bytes ({lines} lines) to {file_path}{fmt_note}");
+
+        // Collect LSP diagnostics after write
+        if let Some(diag_output) =
+            diagnostics_helper::collect_post_edit_diagnostics(ctx, &path).await
+        {
+            output.push_str(&diag_output);
+        }
+
+        ToolResult::ok_with_metadata(output, metadata)
     }
 }
 

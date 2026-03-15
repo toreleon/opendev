@@ -10,6 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
 
+use crate::diagnostics_helper;
 use crate::edit_replacers;
 use crate::formatter;
 use crate::path_utils::{resolve_file_path, validate_path_access};
@@ -155,124 +156,138 @@ impl BaseTool for MultiEditTool {
             return ToolResult::fail(format!("File not found: {file_path}"));
         }
 
-        // --- Acquire per-file lock ---
-        let lock = get_file_lock(&path);
-        let _guard = lock.lock().unwrap();
+        // Acquire per-file lock — scoped so the guard drops before async diagnostics
+        let (output_text, metadata) = {
+            let lock = get_file_lock(&path);
+            let _guard = lock.lock().unwrap();
 
-        // --- Read file once ---
-        let original_content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => return ToolResult::fail(format!("Failed to read file: {e}")),
-        };
-
-        // --- Apply edits sequentially in memory ---
-        let mut content = original_content.clone();
-        let mut total_additions: usize = 0;
-        let mut total_removals: usize = 0;
-        let mut total_replacements: usize = 0;
-        let mut edit_summaries: Vec<String> = Vec::new();
-
-        for (i, edit) in edits.iter().enumerate() {
-            // Fuzzy match against current in-memory content
-            let (actual_old, _pass_name) =
-                match edit_replacers::find_match(&content, &edit.old_string) {
-                    Some(m) => (m.actual, m.pass_name),
-                    None => {
-                        return ToolResult::fail(format!(
-                            "edit[{i}]: old_string not found in {file_path}. \
-                             Make sure the string matches the file content \
-                             (tried 9 fuzzy matching passes). \
-                             Note: earlier edits in this batch may have changed the content."
-                        ));
-                    }
-                };
-
-            // Uniqueness check
-            let count = content.matches(&actual_old as &str).count();
-            if count > 1 && !edit.replace_all {
-                let positions = edit_replacers::find_occurrence_positions(&content, &actual_old);
-                let locations: String = positions
-                    .iter()
-                    .map(|n| format!("line {n}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return ToolResult::fail(format!(
-                    "edit[{i}]: old_string found {count} times at {locations} in {file_path}. \
-                     Provide more surrounding context to make the match unique, \
-                     or use replace_all=true."
-                ));
-            }
-
-            // Perform replacement
-            let new_content = if edit.replace_all {
-                content.replace(&actual_old, &edit.new_string)
-            } else {
-                content.replacen(&actual_old, &edit.new_string, 1)
+            // --- Read file once ---
+            let original_content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => return ToolResult::fail(format!("Failed to read file: {e}")),
             };
 
-            // Track stats
-            let old_line_parts: Vec<&str> = actual_old.split('\n').collect();
-            let new_line_parts: Vec<&str> = edit.new_string.split('\n').collect();
-            let removals = old_line_parts.len();
-            let additions = new_line_parts.len();
-            let replacements = if edit.replace_all { count } else { 1 };
+            // --- Apply edits sequentially in memory ---
+            let mut content = original_content.clone();
+            let mut total_additions: usize = 0;
+            let mut total_removals: usize = 0;
+            let mut total_replacements: usize = 0;
+            let mut edit_summaries: Vec<String> = Vec::new();
 
-            total_additions += additions;
-            total_removals += removals;
-            total_replacements += replacements;
+            for (i, edit) in edits.iter().enumerate() {
+                // Fuzzy match against current in-memory content
+                let (actual_old, _pass_name) =
+                    match edit_replacers::find_match(&content, &edit.old_string) {
+                        Some(m) => (m.actual, m.pass_name),
+                        None => {
+                            return ToolResult::fail(format!(
+                                "edit[{i}]: old_string not found in {file_path}. \
+                                 Make sure the string matches the file content \
+                                 (tried 9 fuzzy matching passes). \
+                                 Note: earlier edits in this batch may have changed the content."
+                            ));
+                        }
+                    };
 
-            edit_summaries.push(format!(
-                "edit[{i}]: {replacements} replacement(s), +{additions}/-{removals} lines"
-            ));
+                // Uniqueness check
+                let count = content.matches(&actual_old as &str).count();
+                if count > 1 && !edit.replace_all {
+                    let positions =
+                        edit_replacers::find_occurrence_positions(&content, &actual_old);
+                    let locations: String = positions
+                        .iter()
+                        .map(|n| format!("line {n}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return ToolResult::fail(format!(
+                        "edit[{i}]: old_string found {count} times at {locations} in {file_path}. \
+                         Provide more surrounding context to make the match unique, \
+                         or use replace_all=true."
+                    ));
+                }
 
-            content = new_content;
+                // Perform replacement
+                let new_content = if edit.replace_all {
+                    content.replace(&actual_old, &edit.new_string)
+                } else {
+                    content.replacen(&actual_old, &edit.new_string, 1)
+                };
+
+                // Track stats
+                let old_line_parts: Vec<&str> = actual_old.split('\n').collect();
+                let new_line_parts: Vec<&str> = edit.new_string.split('\n').collect();
+                let removals = old_line_parts.len();
+                let additions = new_line_parts.len();
+                let replacements = if edit.replace_all { count } else { 1 };
+
+                total_additions += additions;
+                total_removals += removals;
+                total_replacements += replacements;
+
+                edit_summaries.push(format!(
+                    "edit[{i}]: {replacements} replacement(s), +{additions}/-{removals} lines"
+                ));
+
+                content = new_content;
+            }
+
+            // --- Generate combined diff ---
+            let diff_text =
+                edit_replacers::unified_diff(file_path, &original_content, &content, 3);
+
+            // --- Atomic write ---
+            let dir = path.parent().unwrap_or(Path::new("."));
+            let tmp_path = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+
+            if let Err(e) = std::fs::write(&tmp_path, &content) {
+                return ToolResult::fail(format!("Failed to write temp file: {e}"));
+            }
+            if let Err(e) = std::fs::rename(&tmp_path, &path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return ToolResult::fail(format!("Failed to rename temp file: {e}"));
+            }
+
+            // --- Auto-format ---
+            let formatted = formatter::format_file(file_path, &ctx.working_dir);
+
+            // --- Build result ---
+            let mut metadata = HashMap::new();
+            metadata.insert(
+                "total_replacements".into(),
+                serde_json::json!(total_replacements),
+            );
+            metadata.insert("total_additions".into(), serde_json::json!(total_additions));
+            metadata.insert("total_removals".into(), serde_json::json!(total_removals));
+            metadata.insert("edits_applied".into(), serde_json::json!(edits.len()));
+            metadata.insert("diff".into(), serde_json::json!(diff_text));
+            if formatted {
+                metadata.insert("formatted".into(), serde_json::json!(true));
+            }
+
+            let fmt_note = if formatted { " (formatted)" } else { "" };
+            let summary = format!(
+                "Applied {} edit(s) to {file_path}: {total_replacements} total replacement(s), \
+                 {total_additions} addition(s) and {total_removals} removal(s){fmt_note}",
+                edits.len()
+            );
+
+            let details = edit_summaries.join("\n");
+            let output_text = if diff_text.is_empty() {
+                format!("{summary}\n{details}")
+            } else {
+                format!("{summary}\n{details}\n{diff_text}")
+            };
+
+            (output_text, metadata)
+        }; // lock guard dropped here
+
+        // Collect LSP diagnostics after multi-edit (requires no lock held)
+        let mut output_text = output_text;
+        if let Some(diag_output) =
+            diagnostics_helper::collect_post_edit_diagnostics(ctx, &path).await
+        {
+            output_text.push_str(&diag_output);
         }
-
-        // --- Generate combined diff ---
-        let diff_text = edit_replacers::unified_diff(file_path, &original_content, &content, 3);
-
-        // --- Atomic write ---
-        let dir = path.parent().unwrap_or(Path::new("."));
-        let tmp_path = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-
-        if let Err(e) = std::fs::write(&tmp_path, &content) {
-            return ToolResult::fail(format!("Failed to write temp file: {e}"));
-        }
-        if let Err(e) = std::fs::rename(&tmp_path, &path) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return ToolResult::fail(format!("Failed to rename temp file: {e}"));
-        }
-
-        // --- Auto-format ---
-        let formatted = formatter::format_file(file_path, &ctx.working_dir);
-
-        // --- Build result ---
-        let mut metadata = HashMap::new();
-        metadata.insert(
-            "total_replacements".into(),
-            serde_json::json!(total_replacements),
-        );
-        metadata.insert("total_additions".into(), serde_json::json!(total_additions));
-        metadata.insert("total_removals".into(), serde_json::json!(total_removals));
-        metadata.insert("edits_applied".into(), serde_json::json!(edits.len()));
-        metadata.insert("diff".into(), serde_json::json!(diff_text));
-        if formatted {
-            metadata.insert("formatted".into(), serde_json::json!(true));
-        }
-
-        let fmt_note = if formatted { " (formatted)" } else { "" };
-        let summary = format!(
-            "Applied {} edit(s) to {file_path}: {total_replacements} total replacement(s), \
-             {total_additions} addition(s) and {total_removals} removal(s){fmt_note}",
-            edits.len()
-        );
-
-        let details = edit_summaries.join("\n");
-        let output_text = if diff_text.is_empty() {
-            format!("{summary}\n{details}")
-        } else {
-            format!("{summary}\n{details}\n{diff_text}")
-        };
 
         ToolResult::ok_with_metadata(output_text, metadata)
     }

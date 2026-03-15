@@ -6,7 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// A structured validation error with field path and message.
@@ -29,6 +30,55 @@ impl std::fmt::Display for ValidationError {
             write!(f, "{}: {}", self.path, self.message)
         }
     }
+}
+
+/// A diagnostic reported by a language server for a specific file location.
+#[derive(Debug, Clone)]
+pub struct FileDiagnostic {
+    /// 1-based line number.
+    pub line: u32,
+    /// 1-based column number.
+    pub column: u32,
+    /// Severity: 1 = Error, 2 = Warning, 3 = Info, 4 = Hint.
+    pub severity: u32,
+    /// Diagnostic message.
+    pub message: String,
+}
+
+impl FileDiagnostic {
+    /// Format this diagnostic as a human-readable line.
+    pub fn pretty(&self) -> String {
+        let level = match self.severity {
+            1 => "ERROR",
+            2 => "WARN",
+            3 => "INFO",
+            _ => "HINT",
+        };
+        format!("{level} [{}:{}] {}", self.line, self.column, self.message)
+    }
+}
+
+/// Provider of LSP diagnostics for files after edits.
+///
+/// Implementors connect to language servers and return diagnostics
+/// for modified files. The file tools call this after successful writes
+/// to give the LLM immediate feedback about introduced errors.
+#[async_trait::async_trait]
+pub trait DiagnosticProvider: Send + Sync + std::fmt::Debug {
+    /// Notify the provider that a file was modified and retrieve diagnostics.
+    ///
+    /// Returns diagnostics for the specified file, filtering to the given
+    /// severity threshold (1 = errors only, 2 = errors + warnings, etc.).
+    /// The `max_count` parameter limits how many diagnostics to return.
+    ///
+    /// Returns an empty vec if no diagnostics are available or if the
+    /// language server doesn't support the file type.
+    async fn diagnostics_for_file(
+        &self,
+        file_path: &Path,
+        max_severity: u32,
+        max_count: usize,
+    ) -> Vec<FileDiagnostic>;
 }
 
 /// Errors that can occur during tool execution.
@@ -172,6 +222,8 @@ pub struct ToolContext {
     pub timeout_config: Option<ToolTimeoutConfig>,
     /// Cancellation token for cooperative interrupt from the UI.
     pub cancel_token: Option<CancellationToken>,
+    /// Optional LSP diagnostic provider for post-edit feedback.
+    pub diagnostic_provider: Option<Arc<dyn DiagnosticProvider>>,
 }
 
 impl ToolContext {
@@ -184,6 +236,7 @@ impl ToolContext {
             values: HashMap::new(),
             timeout_config: None,
             cancel_token: None,
+            diagnostic_provider: None,
         }
     }
 
@@ -211,6 +264,15 @@ impl ToolContext {
         self
     }
 
+    /// Set a diagnostic provider for post-edit LSP feedback.
+    pub fn with_diagnostic_provider(
+        mut self,
+        provider: Arc<dyn DiagnosticProvider>,
+    ) -> Self {
+        self.diagnostic_provider = Some(provider);
+        self
+    }
+
     /// Set timeout configuration.
     pub fn with_timeout_config(mut self, config: ToolTimeoutConfig) -> Self {
         self.timeout_config = Some(config);
@@ -227,6 +289,7 @@ impl Default for ToolContext {
             values: HashMap::new(),
             timeout_config: None,
             cancel_token: None,
+            diagnostic_provider: None,
         }
     }
 }

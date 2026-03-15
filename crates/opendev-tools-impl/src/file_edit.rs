@@ -7,6 +7,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
 
+use crate::diagnostics_helper;
 use crate::edit_replacers;
 use crate::formatter;
 use crate::path_utils::{resolve_file_path, validate_path_access};
@@ -106,98 +107,111 @@ impl BaseTool for FileEditTool {
             return ToolResult::fail(format!("File not found: {file_path}"));
         }
 
-        // Acquire per-file lock
-        let lock = get_file_lock(&path);
-        let _guard = lock.lock().unwrap();
+        // Acquire per-file lock — scoped so the guard drops before async diagnostics
+        let (output_text, metadata) = {
+            let lock = get_file_lock(&path);
+            let _guard = lock.lock().unwrap();
 
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => return ToolResult::fail(format!("Failed to read file: {e}")),
-        };
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => return ToolResult::fail(format!("Failed to read file: {e}")),
+            };
 
-        // --- Fuzzy match ---
-        let (actual_old, pass_name) = match edit_replacers::find_match(&content, old_string) {
-            Some(m) => (m.actual, m.pass_name),
-            None => {
+            // --- Fuzzy match ---
+            let (actual_old, pass_name) = match edit_replacers::find_match(&content, old_string) {
+                Some(m) => (m.actual, m.pass_name),
+                None => {
+                    return ToolResult::fail(format!(
+                        "old_string not found in {file_path}. Make sure the string matches \
+                         the file content (tried 9 fuzzy matching passes)."
+                    ));
+                }
+            };
+
+            // --- Uniqueness check ---
+            let count = content.matches(&actual_old as &str).count();
+
+            if count > 1 && !replace_all {
+                let positions = edit_replacers::find_occurrence_positions(&content, &actual_old);
+                let locations: String = positions
+                    .iter()
+                    .map(|n| format!("line {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return ToolResult::fail(format!(
-                    "old_string not found in {file_path}. Make sure the string matches \
-                     the file content (tried 9 fuzzy matching passes)."
+                    "old_string found {count} times at {locations} in {file_path}. \
+                     Provide more surrounding context to make the match unique, \
+                     or use replace_all=true."
                 ));
             }
-        };
 
-        // --- Uniqueness check ---
-        let count = content.matches(&actual_old as &str).count();
+            // --- Perform replacement ---
+            let new_content = if replace_all {
+                content.replace(&actual_old, new_string)
+            } else {
+                content.replacen(&actual_old, new_string, 1)
+            };
 
-        if count > 1 && !replace_all {
-            let positions = edit_replacers::find_occurrence_positions(&content, &actual_old);
-            let locations: String = positions
-                .iter()
-                .map(|n| format!("line {n}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return ToolResult::fail(format!(
-                "old_string found {count} times at {locations} in {file_path}. \
-                 Provide more surrounding context to make the match unique, \
-                 or use replace_all=true."
-            ));
+            // --- Diff stats ---
+            let old_line_parts: Vec<&str> = actual_old.split('\n').collect();
+            let new_line_parts: Vec<&str> = new_string.split('\n').collect();
+            let removals = old_line_parts.len();
+            let additions = new_line_parts.len();
+
+            // --- Generate unified diff preview ---
+            let diff_text = edit_replacers::unified_diff(file_path, &content, &new_content, 3);
+
+            // --- Atomic write ---
+            let dir = path.parent().unwrap_or(Path::new("."));
+            let tmp_path = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+
+            if let Err(e) = std::fs::write(&tmp_path, &new_content) {
+                return ToolResult::fail(format!("Failed to write temp file: {e}"));
+            }
+            if let Err(e) = std::fs::rename(&tmp_path, &path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return ToolResult::fail(format!("Failed to rename temp file: {e}"));
+            }
+
+            // Auto-format if a formatter is available
+            let formatted = formatter::format_file(file_path, &ctx.working_dir);
+
+            let replacements = if replace_all { count } else { 1 };
+
+            let mut metadata = HashMap::new();
+            metadata.insert("replacements".into(), serde_json::json!(replacements));
+            metadata.insert("additions".into(), serde_json::json!(additions));
+            metadata.insert("removals".into(), serde_json::json!(removals));
+            metadata.insert("diff".into(), serde_json::json!(diff_text));
+            if pass_name != "simple" {
+                metadata.insert("match_pass".into(), serde_json::json!(pass_name));
+            }
+            if formatted {
+                metadata.insert("formatted".into(), serde_json::json!(true));
+            }
+
+            let fmt_note = if formatted { " (formatted)" } else { "" };
+            let summary = format!(
+                "Edited {file_path}: {replacements} replacement(s), \
+                 {additions} addition(s) and {removals} removal(s){fmt_note}"
+            );
+            let output_text = if diff_text.is_empty() {
+                summary
+            } else {
+                format!("{summary}\n{diff_text}")
+            };
+
+            (output_text, metadata)
+        }; // lock guard dropped here
+
+        // Collect LSP diagnostics after edit (requires no lock held)
+        let mut output_text = output_text;
+        if let Some(diag_output) =
+            diagnostics_helper::collect_post_edit_diagnostics(ctx, &path).await
+        {
+            output_text.push_str(&diag_output);
         }
 
-        // --- Perform replacement ---
-        let new_content = if replace_all {
-            content.replace(&actual_old, new_string)
-        } else {
-            content.replacen(&actual_old, new_string, 1)
-        };
-
-        // --- Diff stats (use split("\n") not lines() for trailing newline correctness) ---
-        let old_line_parts: Vec<&str> = actual_old.split('\n').collect();
-        let new_line_parts: Vec<&str> = new_string.split('\n').collect();
-        let removals = old_line_parts.len();
-        let additions = new_line_parts.len();
-
-        // --- Generate unified diff preview ---
-        let diff_text = edit_replacers::unified_diff(file_path, &content, &new_content, 3);
-
-        // --- Atomic write ---
-        let dir = path.parent().unwrap_or(Path::new("."));
-        let tmp_path = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-
-        if let Err(e) = std::fs::write(&tmp_path, &new_content) {
-            return ToolResult::fail(format!("Failed to write temp file: {e}"));
-        }
-        if let Err(e) = std::fs::rename(&tmp_path, path) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return ToolResult::fail(format!("Failed to rename temp file: {e}"));
-        }
-
-        // Auto-format if a formatter is available
-        let formatted = formatter::format_file(file_path, &ctx.working_dir);
-
-        let replacements = if replace_all { count } else { 1 };
-
-        let mut metadata = HashMap::new();
-        metadata.insert("replacements".into(), serde_json::json!(replacements));
-        metadata.insert("additions".into(), serde_json::json!(additions));
-        metadata.insert("removals".into(), serde_json::json!(removals));
-        metadata.insert("diff".into(), serde_json::json!(diff_text));
-        if pass_name != "simple" {
-            metadata.insert("match_pass".into(), serde_json::json!(pass_name));
-        }
-        if formatted {
-            metadata.insert("formatted".into(), serde_json::json!(true));
-        }
-
-        let fmt_note = if formatted { " (formatted)" } else { "" };
-        let summary = format!(
-            "Edited {file_path}: {replacements} replacement(s), \
-             {additions} addition(s) and {removals} removal(s){fmt_note}"
-        );
-        let output_text = if diff_text.is_empty() {
-            summary
-        } else {
-            format!("{summary}\n{diff_text}")
-        };
         ToolResult::ok_with_metadata(output_text, metadata)
     }
 }
