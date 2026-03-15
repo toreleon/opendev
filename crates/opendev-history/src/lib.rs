@@ -24,7 +24,7 @@ pub use fair_rwlock::FairRwLock;
 pub use file_locks::FileLock;
 pub use index::SessionIndex;
 pub use listing::SessionListing;
-pub use session_manager::{SessionManager, generate_title_from_messages};
+pub use session_manager::{SessionManager, generate_title_from_messages, get_forked_title};
 pub use sharing::share_session;
 pub use snapshot::{DiffStatus, DiffSummary, FileDiff, FileDiffStat, SnapshotManager};
 pub use sqlite_store::SqliteSessionStore;

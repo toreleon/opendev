@@ -320,9 +320,15 @@ impl SessionManager {
         forked.channel = source.channel.clone();
         forked.channel_user_id = source.channel_user_id.clone();
 
-        // Auto-generate title for the fork
-        let title = generate_title_from_messages(&forked.messages)
-            .unwrap_or_else(|| format!("Fork of {}", session_id));
+        // Generate fork title: inherit parent title and add fork numbering
+        let parent_title = source
+            .metadata
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| generate_title_from_messages(&source.messages))
+            .unwrap_or_else(|| format!("Session {}", session_id));
+        let title = get_forked_title(&parent_title);
         forked
             .metadata
             .insert("title".to_string(), serde_json::Value::String(title));
@@ -458,6 +464,23 @@ pub fn generate_title_from_messages(messages: &[opendev_models::ChatMessage]) ->
         return None;
     }
     Some(truncate_at_word_boundary(text, 60))
+}
+
+/// Generate a title for a forked session by appending `(fork #N)`.
+///
+/// If the title already ends with `(fork #N)`, the number is incremented.
+/// Otherwise, `(fork #1)` is appended.
+pub fn get_forked_title(title: &str) -> String {
+    // Match trailing " (fork #N)" pattern
+    if let Some(caps) = regex::Regex::new(r"^(.+) \(fork #(\d+)\)$")
+        .ok()
+        .and_then(|re| re.captures(title))
+    {
+        let base = caps.get(1).map_or("", |m| m.as_str());
+        let num: u32 = caps.get(2).map_or(1, |m| m.as_str().parse().unwrap_or(1));
+        return format!("{base} (fork #{})", num + 1);
+    }
+    format!("{title} (fork #1)")
 }
 
 /// Truncate a string to at most `max_chars` characters at a word boundary.
@@ -740,7 +763,8 @@ mod tests {
             .get("title")
             .and_then(|v| v.as_str())
             .unwrap();
-        assert_eq!(title, "Implement the new auth flow");
+        // Fork inherits parent title with "(fork #1)" suffix
+        assert_eq!(title, "Implement the new auth flow (fork #1)");
     }
 
     // --- Title generation tests ---
@@ -1017,5 +1041,88 @@ mod tests {
 
         let results = mgr.search_sessions("nonexistent");
         assert!(results.is_empty());
+    }
+
+    // --- get_forked_title tests ---
+
+    #[test]
+    fn test_forked_title_first_fork() {
+        assert_eq!(get_forked_title("My Session"), "My Session (fork #1)");
+    }
+
+    #[test]
+    fn test_forked_title_increment() {
+        assert_eq!(
+            get_forked_title("My Session (fork #1)"),
+            "My Session (fork #2)"
+        );
+    }
+
+    #[test]
+    fn test_forked_title_high_number() {
+        assert_eq!(
+            get_forked_title("Debug auth (fork #99)"),
+            "Debug auth (fork #100)"
+        );
+    }
+
+    #[test]
+    fn test_forked_title_preserves_base() {
+        let title = get_forked_title("Fix (parens) in title");
+        assert_eq!(title, "Fix (parens) in title (fork #1)");
+    }
+
+    #[test]
+    fn test_forked_title_empty() {
+        assert_eq!(get_forked_title(""), " (fork #1)");
+    }
+
+    #[test]
+    fn test_fork_session_uses_parent_title() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = SessionManager::new(tmp.path().to_path_buf()).unwrap();
+
+        let mut session = Session::new();
+        session.id = "fork-title-parent".to_string();
+        session
+            .metadata
+            .insert("title".to_string(), serde_json::json!("Auth refactor"));
+        session
+            .messages
+            .push(make_msg(Role::User, "Some unrelated first message"));
+        mgr.save_session(&session).unwrap();
+
+        let forked = mgr.fork_session("fork-title-parent", None).unwrap();
+        let title = forked
+            .metadata
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        // Should use parent's explicit title, not re-generate from messages
+        assert_eq!(title, "Auth refactor (fork #1)");
+    }
+
+    #[test]
+    fn test_fork_double_fork_increments() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = SessionManager::new(tmp.path().to_path_buf()).unwrap();
+
+        let mut session = Session::new();
+        session.id = "double-fork-src".to_string();
+        session
+            .metadata
+            .insert("title".to_string(), serde_json::json!("My task (fork #2)"));
+        session
+            .messages
+            .push(make_msg(Role::User, "hello"));
+        mgr.save_session(&session).unwrap();
+
+        let forked = mgr.fork_session("double-fork-src", None).unwrap();
+        let title = forked
+            .metadata
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert_eq!(title, "My task (fork #3)");
     }
 }

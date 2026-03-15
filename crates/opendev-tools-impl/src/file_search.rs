@@ -321,7 +321,11 @@ impl SearchArgs {
         Ok(Self {
             pattern,
             path: args.get("path").and_then(|v| v.as_str()).map(String::from),
-            glob: args.get("glob").and_then(|v| v.as_str()).map(String::from),
+            glob: args
+                .get("glob")
+                .or_else(|| args.get("include"))
+                .and_then(|v| v.as_str())
+                .map(String::from),
             file_type: args
                 .get("type")
                 .or_else(|| args.get("file_type"))
@@ -389,6 +393,10 @@ impl BaseTool for FileSearchTool {
                 "glob": {
                     "type": "string",
                     "description": "Glob pattern to filter files (e.g., \"*.rs\", \"*.{ts,tsx}\") — maps to rg --glob"
+                },
+                "include": {
+                    "type": "string",
+                    "description": "Alias for glob — file pattern to include in the search (e.g., \"*.js\", \"*.{ts,tsx}\")"
                 },
                 "type": {
                     "type": "string",
@@ -1553,5 +1561,66 @@ mod ast_grep_tests {
         if let Some(st) = result.metadata.get("search_type") {
             assert_eq!(st, "ast");
         }
+    }
+
+    // --- include alias for glob ---
+
+    #[test]
+    fn test_parse_args_include_alias() {
+        let args = make_args(&[
+            ("pattern", serde_json::json!("hello")),
+            ("include", serde_json::json!("*.rs")),
+        ]);
+        let parsed = SearchArgs::from_map(&args).unwrap();
+        assert_eq!(parsed.glob.as_deref(), Some("*.rs"));
+    }
+
+    #[test]
+    fn test_parse_args_glob_takes_precedence_over_include() {
+        let args = make_args(&[
+            ("pattern", serde_json::json!("hello")),
+            ("glob", serde_json::json!("*.py")),
+            ("include", serde_json::json!("*.rs")),
+        ]);
+        let parsed = SearchArgs::from_map(&args).unwrap();
+        // glob should take precedence
+        assert_eq!(parsed.glob.as_deref(), Some("*.py"));
+    }
+
+    #[test]
+    fn test_build_rg_command_include_alias() {
+        let args = SearchArgs::from_map(&make_args(&[
+            ("pattern", serde_json::json!("test")),
+            ("include", serde_json::json!("*.tsx")),
+        ]))
+        .unwrap();
+        let cmd = FileSearchTool::build_rg_command(&args, Path::new("/tmp"));
+        let cmd_args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(cmd_args.contains(&"--glob".to_string()));
+        assert!(cmd_args.contains(&"*.tsx".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_search_with_include_filter() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.rs"), "fn alpha() {}\n").unwrap();
+        fs::write(tmp.path().join("b.txt"), "fn beta() {}\n").unwrap();
+
+        let tool = FileSearchTool;
+        let ctx = ToolContext::new(tmp.path());
+        let args = make_args(&[
+            ("pattern", serde_json::json!("fn ")),
+            ("include", serde_json::json!("*.rs")),
+        ]);
+
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.success);
+        let output = result.output.unwrap();
+        assert!(output.contains("alpha"), "should find match in .rs file");
+        assert!(!output.contains("beta"), "should not find match in .txt file");
     }
 }
