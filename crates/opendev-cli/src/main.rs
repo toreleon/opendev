@@ -687,6 +687,9 @@ async fn run_non_interactive(working_dir: &std::path::Path, prompt: &str) {
         }
     };
 
+    // Connect MCP servers (best-effort, failures are logged)
+    agent_runtime.connect_mcp_servers().await;
+
     match agent_runtime
         .run_query(prompt, &system_prompt, None, None)
         .await
@@ -860,7 +863,7 @@ async fn run_interactive(
     let system_prompt = runtime::build_system_prompt(working_dir, &config);
 
     // Create agent runtime
-    let agent_runtime =
+    let mut agent_runtime =
         match runtime::AgentRuntime::new(config.clone(), working_dir, session_manager) {
             Ok(rt) => rt,
             Err(e) => {
@@ -868,6 +871,9 @@ async fn run_interactive(
                 std::process::exit(1);
             }
         };
+
+    // Connect MCP servers (best-effort, failures are logged)
+    agent_runtime.connect_mcp_servers().await;
 
     // Resolve theme: CLI flag > auto-detect from terminal background
     let resolved_theme = theme_name

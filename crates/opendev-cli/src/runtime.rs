@@ -25,6 +25,7 @@ use opendev_models::message::{ChatMessage, Role};
 use opendev_repl::HandlerRegistry;
 use opendev_repl::query_enhancer::QueryEnhancer;
 use opendev_runtime::CostTracker;
+use opendev_mcp::McpManager;
 use opendev_tools_core::{ToolContext, ToolRegistry};
 use opendev_tools_impl::*;
 
@@ -63,6 +64,10 @@ pub struct AgentRuntime {
     pub tool_approval_tx: Option<opendev_runtime::ToolApprovalSender>,
     /// Channel receivers for TUI bridging (taken once by tui_runner).
     pub channel_receivers: Option<ToolChannelReceivers>,
+    /// MCP manager for MCP server connections (shared Arc for bridge tools).
+    pub mcp_manager: Option<Arc<McpManager>>,
+    /// Shared skill loader for re-registering invoke_skill with MCP support.
+    skill_loader: Arc<Mutex<opendev_agents::SkillLoader>>,
 }
 
 /// Receivers returned from tool registration for TUI bridging.
@@ -113,7 +118,7 @@ fn register_default_tools(
 
     // Scheduling & misc
     registry.register(Arc::new(ScheduleTool));
-    registry.register(Arc::new(BatchTool));
+    // BatchTool is registered later (needs Arc<ToolRegistry> for dispatch).
     registry.register(Arc::new(NotebookEditTool));
     registry.register(Arc::new(TaskCompleteTool));
     registry.register(Arc::new(VlmTool));
@@ -175,7 +180,27 @@ pub fn build_system_prompt(working_dir: &Path, config: &AppConfig) -> String {
     let base_prompt = composer.compose(&context);
 
     // Collect and append dynamic environment context
-    let env_ctx = opendev_context::EnvironmentContext::collect(working_dir);
+    let mut env_ctx = opendev_context::EnvironmentContext::collect(working_dir);
+
+    // Resolve config-level instruction paths (file paths, globs, ~/paths)
+    if !config.instructions.is_empty() {
+        let config_instructions =
+            opendev_context::resolve_instruction_paths(&config.instructions, working_dir);
+        // Deduplicate against already-discovered files
+        let existing: std::collections::HashSet<_> = env_ctx
+            .instruction_files
+            .iter()
+            .filter_map(|f| f.path.canonicalize().ok())
+            .collect();
+        for instr in config_instructions {
+            if let Ok(canonical) = instr.path.canonicalize()
+                && !existing.contains(&canonical)
+            {
+                env_ctx.instruction_files.push(instr);
+            }
+        }
+    }
+
     let env_block = env_ctx.format_prompt_block();
 
     if env_block.is_empty() {
@@ -192,18 +217,45 @@ impl AgentRuntime {
         working_dir: &Path,
         session_manager: SessionManager,
     ) -> Result<Self, String> {
-        let tool_registry = Arc::new(ToolRegistry::new());
+        // Set up tool registry with overflow storage for truncated tool outputs.
+        let overflow_dir = working_dir.join(".opendev").join("tool-output");
+        let tool_registry = Arc::new(ToolRegistry::with_overflow_dir(overflow_dir));
         let (todo_manager, channel_receivers, tool_approval_tx) =
             register_default_tools(&tool_registry);
 
-        // Register invoke_skill tool with project-local and user-global skill dirs
+        // BatchTool needs Arc<ToolRegistry> for dispatching calls.
+        tool_registry.register(Arc::new(BatchTool::new(Arc::clone(&tool_registry))));
+
+        // Register invoke_skill tool with project-local and user-global skill dirs.
+        // Priority order (first = highest): .claude/skills > .opendev/skills at each level,
+        // then config-specified skill_paths (lowest priority among custom dirs).
         let mut skill_dirs = Vec::new();
+        skill_dirs.push(working_dir.join(".claude").join("skills"));
         skill_dirs.push(working_dir.join(".opendev").join("skills"));
         if let Some(home) = dirs_next::home_dir() {
+            skill_dirs.push(home.join(".claude").join("skills"));
             skill_dirs.push(home.join(".opendev").join("skills"));
         }
-        let skill_loader = Arc::new(Mutex::new(opendev_agents::SkillLoader::new(skill_dirs)));
-        tool_registry.register(Arc::new(InvokeSkillTool::new(skill_loader)));
+        // Append config-specified skill paths (resolved relative to working_dir, ~/expanded)
+        for path in &config.skill_paths {
+            let resolved = if let Some(rest) = path.strip_prefix("~/") {
+                dirs_next::home_dir()
+                    .map(|h| h.join(rest))
+                    .unwrap_or_else(|| PathBuf::from(path))
+            } else if Path::new(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                working_dir.join(path)
+            };
+            skill_dirs.push(resolved);
+        }
+        let mut skill_loader_inner = opendev_agents::SkillLoader::new(skill_dirs);
+        // Add remote skill URLs from config
+        if !config.skill_urls.is_empty() {
+            skill_loader_inner.add_urls(config.skill_urls.clone());
+        }
+        let skill_loader = Arc::new(Mutex::new(skill_loader_inner));
+        tool_registry.register(Arc::new(InvokeSkillTool::new(Arc::clone(&skill_loader))));
         info!(
             tool_count = tool_registry.tool_names().len(),
             "Registered default tools (before subagent)"
@@ -434,7 +486,61 @@ impl AgentRuntime {
             todo_manager,
             tool_approval_tx: Some(tool_approval_tx),
             channel_receivers: Some(channel_receivers),
+            mcp_manager: None,
+            skill_loader,
         })
+    }
+
+    /// Connect to configured MCP servers and register their tools.
+    ///
+    /// Loads MCP config from global (`~/.opendev/mcp.json`) and project
+    /// (`.mcp.json`) files, connects to all enabled servers, discovers
+    /// tools, and registers them as `McpBridgeTool` instances.
+    ///
+    /// Failures are logged but do not prevent the runtime from starting —
+    /// MCP is optional and best-effort.
+    pub async fn connect_mcp_servers(&mut self) {
+        let manager = Arc::new(McpManager::new(Some(self.working_dir.clone())));
+
+        // Load configuration from disk
+        if let Err(e) = manager.load_configuration().await {
+            debug!(error = %e, "No MCP config loaded (this is normal if no MCP servers are configured)");
+            return;
+        }
+
+        // Connect all configured servers
+        if let Err(e) = manager.connect_all().await {
+            warn!(error = %e, "Failed to connect MCP servers");
+        }
+
+        // Discover tool schemas from connected servers
+        let schemas = manager.get_all_tool_schemas().await;
+        if schemas.is_empty() {
+            debug!("No MCP tools discovered");
+            return;
+        }
+
+        // Register each MCP tool as a BaseTool in the registry
+        let mut registered = 0;
+        for schema in &schemas {
+            let bridge = McpBridgeTool::from_schema(schema, Arc::clone(&manager));
+            self.tool_registry.register(Arc::new(bridge));
+            registered += 1;
+        }
+
+        info!(
+            mcp_tools = registered,
+            total_tools = self.tool_registry.tool_names().len(),
+            "Registered MCP tools"
+        );
+
+        // Re-register invoke_skill with MCP prompt support.
+        self.tool_registry.register(Arc::new(InvokeSkillTool::with_mcp(
+            Arc::clone(&self.skill_loader),
+            Arc::clone(&manager),
+        )));
+
+        self.mcp_manager = Some(manager);
     }
 
     /// Run a single query through the full pipeline.

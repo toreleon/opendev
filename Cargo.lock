@@ -1997,6 +1997,8 @@ name = "opendev-context"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs-next",
+ "glob",
  "opendev-models",
  "regex",
  "serde",
@@ -2217,6 +2219,7 @@ dependencies = [
  "opendev-context",
  "opendev-history",
  "opendev-http",
+ "opendev-mcp",
  "opendev-models",
  "opendev-runtime",
  "opendev-tools-core",

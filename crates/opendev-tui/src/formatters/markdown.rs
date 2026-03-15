@@ -184,8 +184,7 @@ fn parse_inline_spans(text: &str) -> Vec<Span<'static>> {
             }
             let after_start = &remaining[code_start + 1..];
             if let Some(code_end) = after_start.find('`') {
-                let code: Cow<'static, str> =
-                    Cow::Owned(after_start[..code_end].to_string());
+                let code: Cow<'static, str> = Cow::Owned(after_start[..code_end].to_string());
                 spans.push(Span::styled(
                     code,
                     Style::default()

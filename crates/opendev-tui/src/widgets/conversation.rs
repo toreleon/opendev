@@ -548,7 +548,10 @@ fn format_tool_call(tc: &DisplayToolCall) -> Line<'static> {
                 .fg(style_tokens::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("({arg})"), Style::default().fg(style_tokens::SUBTLE)),
+        Span::styled(
+            format!("({arg})"),
+            Style::default().fg(style_tokens::SUBTLE),
+        ),
     ])
 }
 
@@ -576,7 +579,10 @@ fn format_nested_tool_call(tc: &DisplayToolCall, depth: usize) -> Line<'static> 
                 .fg(style_tokens::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("({arg})"), Style::default().fg(style_tokens::SUBTLE)),
+        Span::styled(
+            format!("({arg})"),
+            Style::default().fg(style_tokens::SUBTLE),
+        ),
     ])
 }
 
