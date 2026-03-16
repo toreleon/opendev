@@ -1,0 +1,219 @@
+//! Event types for the TUI application.
+//!
+//! Bridges crossterm terminal events with application-level events
+//! (agent messages, tool execution updates, etc.).
+//!
+//! This module is split into focused sub-modules:
+//! - [`handler`] — Crossterm event reader with scroll debouncing
+//! - [`recorder`] — Event recording/replay for debugging
+
+mod handler;
+mod recorder;
+
+pub use handler::EventHandler;
+pub use recorder::{EventRecorder, RecordedEvent, load_recorded_events};
+
+use crossterm::event::{Event as CrosstermEvent, KeyEvent};
+use opendev_models::message::ChatMessage;
+use opendev_runtime::InterruptToken;
+
+/// Application-level events consumed by the main event loop.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum AppEvent {
+    /// Raw terminal event from crossterm.
+    Terminal(CrosstermEvent),
+    /// Key press (extracted from terminal event for convenience).
+    Key(KeyEvent),
+    /// Terminal resize.
+    Resize(u16, u16),
+    /// Mouse-wheel scroll up (detected via arrow-key debounce from xterm alternate scroll).
+    ScrollUp,
+    /// Mouse-wheel scroll down (detected via arrow-key debounce from xterm alternate scroll).
+    ScrollDown,
+    /// Tick for periodic UI updates (spinner animation, etc.).
+    Tick,
+
+    // -- Agent events --
+    /// Assistant started generating a response.
+    AgentStarted,
+    /// Streaming text chunk from the assistant.
+    AgentChunk(String),
+    /// Complete assistant message received.
+    AgentMessage(ChatMessage),
+    /// Agent finished the current turn.
+    AgentFinished,
+    /// Agent encountered an error.
+    AgentError(String),
+
+    // -- Tool events --
+    /// A tool execution started.
+    ToolStarted {
+        tool_id: String,
+        tool_name: String,
+        args: std::collections::HashMap<String, serde_json::Value>,
+    },
+    /// A tool produced output.
+    ToolOutput { tool_id: String, output: String },
+    /// A tool produced its final result.
+    ToolResult {
+        tool_id: String,
+        tool_name: String,
+        output: String,
+        success: bool,
+        args: std::collections::HashMap<String, serde_json::Value>,
+    },
+    /// A tool execution completed.
+    ToolFinished { tool_id: String, success: bool },
+    /// Tool requires user approval (legacy, no channel — kept for recording compatibility).
+    ToolApprovalRequired {
+        tool_id: String,
+        tool_name: String,
+        description: String,
+    },
+
+    /// Tool approval request with bidirectional channel.
+    ToolApprovalRequested {
+        command: String,
+        working_dir: String,
+        response_tx: tokio::sync::oneshot::Sender<opendev_runtime::ToolApprovalDecision>,
+    },
+
+    /// Ask-user request with bidirectional channel.
+    AskUserRequested {
+        question: String,
+        options: Vec<String>,
+        default: Option<String>,
+        response_tx: tokio::sync::oneshot::Sender<String>,
+    },
+
+    // -- Subagent events --
+    /// A subagent started executing.
+    SubagentStarted {
+        subagent_id: String,
+        subagent_name: String,
+        task: String,
+    },
+    /// A subagent made a tool call (for nested display).
+    SubagentToolCall {
+        subagent_id: String,
+        subagent_name: String,
+        tool_name: String,
+        tool_id: String,
+        args: std::collections::HashMap<String, serde_json::Value>,
+    },
+    /// A subagent tool call completed.
+    SubagentToolComplete {
+        subagent_id: String,
+        subagent_name: String,
+        tool_name: String,
+        tool_id: String,
+        success: bool,
+    },
+    /// A subagent finished its task.
+    SubagentFinished {
+        subagent_id: String,
+        subagent_name: String,
+        success: bool,
+        result_summary: String,
+        tool_call_count: usize,
+        shallow_warning: Option<String>,
+    },
+    /// Token usage update from a subagent's LLM call.
+    SubagentTokenUpdate {
+        subagent_id: String,
+        subagent_name: String,
+        input_tokens: u64,
+        output_tokens: u64,
+    },
+
+    // -- Thinking events --
+    /// A thinking trace was produced before the action phase.
+    ThinkingTrace(String),
+    /// A self-critique was produced (High thinking level only).
+    CritiqueTrace(String),
+    /// A refined thinking trace was produced after critique (High thinking level only).
+    RefinedThinkingTrace(String),
+
+    // -- Task progress events --
+    /// Agent started working on a task (shows progress bar).
+    TaskProgressStarted { description: String },
+    /// Agent finished the current task (hides progress bar).
+    TaskProgressFinished,
+
+    // -- Budget events --
+    /// Session cost budget has been exhausted. The agent loop should pause.
+    BudgetExhausted { cost_usd: f64, budget_usd: f64 },
+
+    // -- File change events --
+    /// File change summary after a query completes.
+    FileChangeSummary {
+        files: usize,
+        additions: u64,
+        deletions: u64,
+    },
+
+    // -- Context events --
+    /// Context window usage percentage updated (0.0–100.0).
+    ContextUsage(f64),
+
+    // -- Compaction events --
+    /// Manual compaction started (shows compaction spinner).
+    CompactionStarted,
+    /// Manual compaction finished (hides compaction spinner, shows result).
+    CompactionFinished { success: bool, message: String },
+
+    // -- Plan events --
+    /// Plan approval request arrived from the PresentPlanTool.
+    /// Contains the plan content to display and the oneshot sender for the decision.
+    PlanApprovalRequested {
+        plan_content: String,
+        response_tx: tokio::sync::oneshot::Sender<opendev_runtime::PlanDecision>,
+    },
+
+    // -- UI events --
+    /// User submitted a message.
+    UserSubmit(String),
+    /// User requested interrupt (Escape).
+    Interrupt,
+    /// Set the interrupt token for the current query (sent by agent backend).
+    SetInterruptToken(InterruptToken),
+    /// Agent run was interrupted (sent by agent backend after cancellation).
+    AgentInterrupted,
+    /// Mode changed (normal/plan).
+    ModeChanged(String),
+    /// Kill a background task by ID.
+    KillTask(String),
+    /// Quit the application.
+    Quit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_event_handler_creation() {
+        let handler = EventHandler::new(Duration::from_millis(250));
+        let _sender = handler.sender();
+    }
+
+    #[tokio::test]
+    async fn test_sender_delivers_events() {
+        let mut handler = EventHandler::new(Duration::from_millis(250));
+        let tx = handler.sender();
+        tx.send(AppEvent::Tick).unwrap();
+        let event = handler.next().await.unwrap();
+        assert!(matches!(event, AppEvent::Tick));
+    }
+
+    #[tokio::test]
+    async fn test_quit_event() {
+        let mut handler = EventHandler::new(Duration::from_millis(250));
+        let tx = handler.sender();
+        tx.send(AppEvent::Quit).unwrap();
+        let event = handler.next().await.unwrap();
+        assert!(matches!(event, AppEvent::Quit));
+    }
+}
