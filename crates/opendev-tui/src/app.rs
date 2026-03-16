@@ -145,6 +145,8 @@ pub struct AppState {
     pub autocomplete: crate::autocomplete::AutocompleteEngine,
     /// Number of running background tasks.
     pub background_task_count: usize,
+    /// Whether the background task panel overlay is open.
+    pub background_panel_open: bool,
     /// Active subagent executions for nested display.
     pub active_subagents: Vec<crate::widgets::nested_tool::SubagentDisplayState>,
     /// Shared todo manager for syncing panel state with tool results.
@@ -417,6 +419,7 @@ impl Default for AppState {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             ),
             background_task_count: 0,
+            background_panel_open: false,
             active_subagents: Vec::new(),
             todo_manager: None,
             todo_items: Vec::new(),
@@ -1154,6 +1157,32 @@ impl App {
         .mcp_status(self.state.mcp_status, self.state.mcp_has_errors)
         .background_tasks(self.state.background_task_count);
         frame.render_widget(status, chunks[4]);
+
+        // Background task panel overlay (Ctrl+B)
+        if self.state.background_panel_open {
+            let task_items: Vec<crate::widgets::background_tasks::TaskDisplayItem> =
+                if let Ok(mgr) = self.task_manager.try_lock() {
+                    mgr.all_tasks()
+                        .iter()
+                        .map(|t| crate::widgets::background_tasks::TaskDisplayItem {
+                            task_id: t.task_id.clone(),
+                            description: t.description.clone(),
+                            state: t.state.to_string(),
+                            runtime_secs: t.runtime_seconds(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            let running = task_items.iter().filter(|t| t.state == "running").count();
+            let total = task_items.len();
+            let panel = crate::widgets::background_tasks::BackgroundTaskPanel::new(
+                &task_items,
+                running,
+                total,
+            );
+            frame.render_widget(panel, chunks[0]);
+        }
     }
 
     /// Shared helper that renders a popup panel matching the Python Textual style:
@@ -2405,26 +2434,10 @@ impl App {
                     self.state.dirty = true;
                 }
             }
-            // Ctrl+B — show background tasks info
+            // Ctrl+B — toggle background task panel overlay
             (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
-                let count = self.state.background_task_count;
-                if count > 0 {
-                    let task_word = if count == 1 { "task" } else { "tasks" };
-                    self.state.messages.push(DisplayMessage {
-                        role: DisplayRole::System,
-                        content: format!("{count} background {task_word} running."),
-                        tool_call: None,
-                        collapsed: false,
-                    });
-                } else {
-                    self.state.messages.push(DisplayMessage {
-                        role: DisplayRole::System,
-                        content: "No background tasks running.".to_string(),
-                        tool_call: None,
-                        collapsed: false,
-                    });
-                }
-                self.state.message_generation += 1;
+                self.state.background_panel_open = !self.state.background_panel_open;
+                self.state.dirty = true;
             }
             // Regular character input
             (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {

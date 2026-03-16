@@ -1,5 +1,6 @@
 //! UI widgets for the TUI application.
 
+pub mod background_tasks;
 pub mod conversation;
 pub mod input;
 pub mod nested_tool;
@@ -11,6 +12,7 @@ pub mod todo_panel;
 pub mod tool_display;
 pub mod welcome_panel;
 
+pub use background_tasks::{BackgroundTaskPanel, TaskDisplayItem};
 pub use conversation::ConversationWidget;
 pub use input::InputWidget;
 pub use nested_tool::{NestedToolWidget, SubagentDisplayState};
