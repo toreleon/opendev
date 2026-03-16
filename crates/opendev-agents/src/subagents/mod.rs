@@ -5,7 +5,7 @@ pub mod manager;
 pub mod spec;
 
 pub use manager::{
-    NoopProgressCallback, SubagentManager, SubagentProgressCallback, SubagentRunResult,
-    SubagentType,
+    NoopProgressCallback, SubagentEventBridge, SubagentManager, SubagentProgressCallback,
+    SubagentRunResult, SubagentType,
 };
 pub use spec::{AgentMode, PermissionAction, PermissionRule, SubAgentSpec, builtins};

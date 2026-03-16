@@ -70,6 +70,9 @@ pub trait SubagentProgressCallback: Send + Sync {
 
     /// Called when the subagent finishes (with or without error).
     fn on_finished(&self, subagent_name: &str, success: bool, result_summary: &str);
+
+    /// Called when token usage is reported from an LLM call.
+    fn on_token_usage(&self, _subagent_name: &str, _input_tokens: u64, _output_tokens: u64) {}
 }
 
 /// A no-op progress callback for when the caller doesn't need progress updates.
@@ -81,6 +84,52 @@ impl SubagentProgressCallback for NoopProgressCallback {
     fn on_tool_call(&self, _name: &str, _tool: &str, _id: &str) {}
     fn on_tool_complete(&self, _name: &str, _tool: &str, _id: &str, _success: bool) {}
     fn on_finished(&self, _name: &str, _success: bool, _summary: &str) {}
+}
+
+/// Bridge that forwards `AgentEventCallback` events from the subagent's
+/// react loop to the parent's `SubagentProgressCallback`.
+///
+/// This makes subagent tool calls visible to the TUI in real-time.
+pub struct SubagentEventBridge {
+    subagent_name: String,
+    progress: Arc<dyn SubagentProgressCallback>,
+}
+
+impl SubagentEventBridge {
+    /// Create a new bridge for a given subagent.
+    pub fn new(subagent_name: String, progress: Arc<dyn SubagentProgressCallback>) -> Self {
+        Self {
+            subagent_name,
+            progress,
+        }
+    }
+}
+
+impl crate::traits::AgentEventCallback for SubagentEventBridge {
+    fn on_tool_started(
+        &self,
+        tool_id: &str,
+        tool_name: &str,
+        _args: &std::collections::HashMap<String, serde_json::Value>,
+    ) {
+        self.progress
+            .on_tool_call(&self.subagent_name, tool_name, tool_id);
+    }
+
+    fn on_tool_finished(&self, tool_id: &str, success: bool) {
+        self.progress
+            .on_tool_complete(&self.subagent_name, "", tool_id, success);
+    }
+
+    fn on_agent_chunk(&self, _text: &str) {}
+    fn on_thinking(&self, _content: &str) {}
+    fn on_critique(&self, _content: &str) {}
+    fn on_thinking_refined(&self, _content: &str) {}
+
+    fn on_token_usage(&self, input_tokens: u64, output_tokens: u64) {
+        self.progress
+            .on_token_usage(&self.subagent_name, input_tokens, output_tokens);
+    }
 }
 
 /// Result of spawning a subagent, containing the result and diagnostic info.
@@ -386,7 +435,7 @@ impl SubagentManager {
         tool_registry: Arc<ToolRegistry>,
         http_client: Arc<AdaptedClient>,
         working_dir: &str,
-        progress: &dyn SubagentProgressCallback,
+        progress: Arc<dyn SubagentProgressCallback>,
         task_monitor: Option<&dyn TaskMonitor>,
     ) -> Result<SubagentRunResult, AgentError> {
         let spec = self.get(subagent_name).ok_or_else(|| {
@@ -485,6 +534,13 @@ impl SubagentManager {
             permission: spec.permission.clone(),
             ..Default::default()
         });
+
+        // Wire event bridge so subagent tool calls are visible to the TUI
+        let bridge = Arc::new(SubagentEventBridge::new(
+            spec.name.clone(),
+            Arc::clone(&progress),
+        ));
+        agent.set_event_callback(bridge);
 
         debug!(subagent = %spec.name, "Running subagent ReAct loop");
 

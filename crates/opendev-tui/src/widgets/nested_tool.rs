@@ -55,6 +55,8 @@ pub struct SubagentDisplayState {
     pub active_tools: HashMap<String, NestedToolCallState>,
     /// Completed tool calls (for display).
     pub completed_tools: Vec<CompletedToolCall>,
+    /// Accumulated token count (input + output).
+    pub token_count: u64,
     /// Animation tick counter for spinner.
     pub tick: usize,
     /// Optional shallow subagent warning.
@@ -74,6 +76,7 @@ impl SubagentDisplayState {
             tool_call_count: 0,
             active_tools: HashMap::new(),
             completed_tools: Vec::new(),
+            token_count: 0,
             tick: 0,
             shallow_warning: None,
         }
@@ -91,6 +94,11 @@ impl SubagentDisplayState {
                 tick: 0,
             },
         );
+    }
+
+    /// Accumulate token usage from an LLM call.
+    pub fn add_tokens(&mut self, input_tokens: u64, output_tokens: u64) {
+        self.token_count += input_tokens + output_tokens;
     }
 
     /// Record a tool call completing.

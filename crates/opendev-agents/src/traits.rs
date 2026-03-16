@@ -221,6 +221,8 @@ pub trait AgentEventCallback: Send + Sync {
     fn on_tool_result(&self, _tool_id: &str, _tool_name: &str, _output: &str, _success: bool) {}
     /// Context window usage percentage updated (0.0–100.0).
     fn on_context_usage(&self, _pct: f64) {}
+    /// Token usage from an LLM call.
+    fn on_token_usage(&self, _input_tokens: u64, _output_tokens: u64) {}
 }
 
 /// Dependencies injected into agent runs.

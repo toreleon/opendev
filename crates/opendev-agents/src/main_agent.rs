@@ -15,7 +15,9 @@ use crate::llm_calls::{LlmCallConfig, LlmCaller};
 use crate::prompts::PromptComposer;
 use crate::react_loop::{ReactLoop, ReactLoopConfig};
 use crate::response::ResponseCleaner;
-use crate::traits::{AgentDeps, AgentError, AgentResult, BaseAgent, LlmResponse, TaskMonitor};
+use crate::traits::{
+    AgentDeps, AgentError, AgentEventCallback, AgentResult, BaseAgent, LlmResponse, TaskMonitor,
+};
 
 /// Simple glob matching for tool name patterns.
 ///
@@ -128,6 +130,8 @@ pub struct MainAgent {
     tool_schemas: Vec<Value>,
     /// HTTP client for LLM API calls.
     http_client: Option<Arc<AdaptedClient>>,
+    /// Event callback for streaming agent events to the UI.
+    event_callback: Option<Arc<dyn AgentEventCallback>>,
     /// Whether this agent is running as a subagent with restricted tools.
     pub is_subagent: bool,
 }
@@ -175,6 +179,7 @@ impl MainAgent {
             system_prompt,
             tool_schemas,
             http_client: None,
+            event_callback: None,
             is_subagent,
         }
     }
@@ -188,6 +193,11 @@ impl MainAgent {
     /// Set the HTTP client (mutable reference variant).
     pub fn set_http_client(&mut self, client: Arc<AdaptedClient>) {
         self.http_client = Some(client);
+    }
+
+    /// Set the event callback for streaming agent events to the UI.
+    pub fn set_event_callback(&mut self, callback: Arc<dyn AgentEventCallback>) {
+        self.event_callback = Some(callback);
     }
 
     /// Build tool schemas, optionally filtering to allowed tools only.
@@ -406,7 +416,7 @@ impl BaseAgent for MainAgent {
                 &self.tool_registry,
                 &tool_context,
                 task_monitor,
-                None,
+                self.event_callback.as_deref(),
                 None,
                 None,
                 None,
@@ -425,6 +435,7 @@ impl std::fmt::Debug for MainAgent {
             .field("is_subagent", &self.is_subagent)
             .field("tool_count", &self.tool_schemas.len())
             .field("has_http_client", &self.http_client.is_some())
+            .field("has_event_callback", &self.event_callback.is_some())
             .finish()
     }
 }

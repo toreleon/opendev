@@ -106,6 +106,12 @@ pub enum AppEvent {
         tool_call_count: usize,
         shallow_warning: Option<String>,
     },
+    /// Token usage update from a subagent's LLM call.
+    SubagentTokenUpdate {
+        subagent_name: String,
+        input_tokens: u64,
+        output_tokens: u64,
+    },
 
     // -- Thinking events --
     /// A thinking trace was produced before the action phase.
@@ -486,6 +492,18 @@ impl RecordedEvent {
                     "shallow_warning": shallow_warning,
                 }),
             ),
+            AppEvent::SubagentTokenUpdate {
+                subagent_name,
+                input_tokens,
+                output_tokens,
+            } => (
+                "SubagentTokenUpdate".to_string(),
+                serde_json::json!({
+                    "subagent_name": subagent_name,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                }),
+            ),
             AppEvent::ThinkingTrace(s) => {
                 ("ThinkingTrace".to_string(), serde_json::json!({"trace": s}))
             }
@@ -675,6 +693,16 @@ impl RecordedEvent {
                     result_summary,
                     tool_call_count,
                     shallow_warning,
+                })
+            }
+            "SubagentTokenUpdate" => {
+                let subagent_name = self.payload.get("subagent_name")?.as_str()?.to_string();
+                let input_tokens = self.payload.get("input_tokens")?.as_u64()?;
+                let output_tokens = self.payload.get("output_tokens")?.as_u64()?;
+                Some(AppEvent::SubagentTokenUpdate {
+                    subagent_name,
+                    input_tokens,
+                    output_tokens,
                 })
             }
             "ThinkingTrace" => {

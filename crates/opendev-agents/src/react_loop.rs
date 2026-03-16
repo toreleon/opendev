@@ -923,6 +923,13 @@ impl ReactLoop {
                 monitor.update_tokens(total);
             }
 
+            // Emit token usage event to callback
+            if let Some(cb) = event_callback {
+                if input_tokens > 0 || output_tokens > 0 {
+                    cb.on_token_usage(input_tokens, output_tokens);
+                }
+            }
+
             // Record cost tracking
             if let Some(ct) = cost_tracker
                 && let Some(ref usage_json) = response.usage

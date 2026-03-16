@@ -1916,6 +1916,22 @@ impl App {
                 self.state.dirty = true;
             }
 
+            AppEvent::SubagentTokenUpdate {
+                subagent_name,
+                input_tokens,
+                output_tokens,
+            } => {
+                if let Some(subagent) = self
+                    .state
+                    .active_subagents
+                    .iter_mut()
+                    .find(|s| s.name == subagent_name && !s.finished)
+                {
+                    subagent.add_tokens(input_tokens, output_tokens);
+                }
+                self.state.dirty = true;
+            }
+
             // Task progress events
             AppEvent::TaskProgressStarted { description } => {
                 self.state.task_progress = Some(crate::widgets::progress::TaskProgress {
@@ -2080,8 +2096,8 @@ impl App {
 
     /// Handle a key press event.
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
-        // Only process key-press events (Kitty protocol also sends Release/Repeat)
-        if key.kind != crossterm::event::KeyEventKind::Press {
+        // Only process key-press and repeat events (Kitty protocol also sends Release)
+        if !matches!(key.kind, crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat) {
             return;
         }
 

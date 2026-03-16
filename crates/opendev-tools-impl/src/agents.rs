@@ -147,15 +147,21 @@ impl AgentsTool {
 #[derive(Debug, Clone)]
 pub enum SubagentEvent {
     /// Subagent started.
-    Started { subagent_name: String, task: String },
+    Started {
+        subagent_id: String,
+        subagent_name: String,
+        task: String,
+    },
     /// Subagent made a tool call.
     ToolCall {
+        subagent_id: String,
         subagent_name: String,
         tool_name: String,
         tool_id: String,
     },
     /// A subagent tool call completed.
     ToolComplete {
+        subagent_id: String,
         subagent_name: String,
         tool_name: String,
         tool_id: String,
@@ -163,11 +169,19 @@ pub enum SubagentEvent {
     },
     /// Subagent finished.
     Finished {
+        subagent_id: String,
         subagent_name: String,
         success: bool,
         result_summary: String,
         tool_call_count: usize,
         shallow_warning: Option<String>,
+    },
+    /// Token usage update from a subagent's LLM call.
+    TokenUpdate {
+        subagent_id: String,
+        subagent_name: String,
+        input_tokens: u64,
+        output_tokens: u64,
     },
 }
 
@@ -176,12 +190,14 @@ pub enum SubagentEvent {
 /// Used to bridge subagent execution progress back to the TUI event loop.
 pub struct ChannelProgressCallback {
     tx: mpsc::UnboundedSender<SubagentEvent>,
+    /// Unique identifier for this subagent instance (disambiguates parallel subagents).
+    subagent_id: String,
 }
 
 impl ChannelProgressCallback {
-    /// Create a new channel-based progress callback.
-    pub fn new(tx: mpsc::UnboundedSender<SubagentEvent>) -> Self {
-        Self { tx }
+    /// Create a new channel-based progress callback with a unique subagent ID.
+    pub fn new(tx: mpsc::UnboundedSender<SubagentEvent>, subagent_id: String) -> Self {
+        Self { tx, subagent_id }
     }
 }
 
@@ -223,6 +239,14 @@ impl opendev_agents::SubagentProgressCallback for ChannelProgressCallback {
             result_summary: result_summary.to_string(),
             tool_call_count: 0,
             shallow_warning: None,
+        });
+    }
+
+    fn on_token_usage(&self, subagent_name: &str, input_tokens: u64, output_tokens: u64) {
+        let _ = self.tx.send(SubagentEvent::TokenUpdate {
+            subagent_name: subagent_name.to_string(),
+            input_tokens,
+            output_tokens,
         });
     }
 }
@@ -373,11 +397,11 @@ impl BaseTool for SpawnSubagentTool {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         // Create progress callback
-        let progress: Box<dyn opendev_agents::SubagentProgressCallback> =
+        let progress: Arc<dyn opendev_agents::SubagentProgressCallback> =
             if let Some(ref tx) = self.event_tx {
-                Box::new(ChannelProgressCallback::new(tx.clone()))
+                Arc::new(ChannelProgressCallback::new(tx.clone()))
             } else {
-                Box::new(opendev_agents::NoopProgressCallback)
+                Arc::new(opendev_agents::NoopProgressCallback)
             };
 
         // Spawn the subagent
@@ -390,7 +414,7 @@ impl BaseTool for SpawnSubagentTool {
                 Arc::clone(&self.tool_registry),
                 Arc::clone(&self.http_client),
                 wd,
-                progress.as_ref(),
+                progress,
                 None,
             )
             .await;

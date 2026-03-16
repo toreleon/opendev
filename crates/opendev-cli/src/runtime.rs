@@ -78,6 +78,7 @@ pub struct ToolChannelReceivers {
     pub ask_user_rx: opendev_runtime::AskUserReceiver,
     pub plan_approval_rx: opendev_runtime::PlanApprovalReceiver,
     pub tool_approval_rx: opendev_runtime::ToolApprovalReceiver,
+    pub subagent_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<opendev_tools_impl::SubagentEvent>>,
 }
 
 /// Register all built-in tools into the registry.
@@ -156,6 +157,7 @@ fn register_default_tools(
             ask_user_rx,
             plan_approval_rx,
             tool_approval_rx,
+            subagent_event_rx: None,
         },
         tool_approval_tx,
     )
@@ -225,7 +227,7 @@ impl AgentRuntime {
         // Clean up overflow files older than 7 days on startup.
         opendev_tools_core::cleanup_overflow_dir(&overflow_dir);
         let tool_registry = Arc::new(ToolRegistry::with_overflow_dir(overflow_dir));
-        let (todo_manager, channel_receivers, tool_approval_tx) =
+        let (todo_manager, mut channel_receivers, tool_approval_tx) =
             register_default_tools(&tool_registry);
 
         // BatchTool needs Arc<ToolRegistry> for dispatching calls.
@@ -482,14 +484,21 @@ impl AgentRuntime {
             );
         }
         let subagent_manager = Arc::new(subagent_manager);
-        tool_registry.register(Arc::new(SpawnSubagentTool::new(
-            subagent_manager,
-            Arc::clone(&tool_registry),
-            Arc::clone(&http_client),
-            session_dir,
-            &config.model,
-            working_dir.display().to_string(),
-        )));
+        // Create subagent event channel for TUI bridging
+        let (subagent_event_tx, subagent_event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<opendev_tools_impl::SubagentEvent>();
+        tool_registry.register(Arc::new(
+            SpawnSubagentTool::new(
+                subagent_manager,
+                Arc::clone(&tool_registry),
+                Arc::clone(&http_client),
+                session_dir,
+                &config.model,
+                working_dir.display().to_string(),
+            )
+            .with_event_sender(subagent_event_tx),
+        ));
+        channel_receivers.subagent_event_rx = Some(subagent_event_rx);
         info!(
             tool_count = tool_registry.tool_names().len(),
             "Registered all tools including spawn_subagent"
