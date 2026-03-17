@@ -395,8 +395,11 @@ mod tests {
             make_msg("user", "Tell me more."),
         ];
         let summary = ContextCompactor::fallback_summary(&messages);
-        assert!(summary.contains("[user] What is Rust?"));
-        assert!(summary.contains("[assistant] Rust is a systems programming language."));
+        // Structured format: Goal / Key Actions / Current State
+        assert!(summary.contains("## Goal"));
+        assert!(summary.contains("What is Rust?"));
+        assert!(summary.contains("## Current State"));
+        assert!(summary.contains("Rust is a systems programming language."));
     }
 
     #[test]
