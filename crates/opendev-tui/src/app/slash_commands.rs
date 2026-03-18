@@ -352,6 +352,7 @@ impl App {
                         "Keyboard shortcuts:",
                         "  Ctrl+C      — Clear input / interrupt / quit",
                         "  Ctrl+B      — Background running agent / toggle panel",
+                        "  Alt+B       — Toggle task watcher panel",
                         "  Escape      — Interrupt agent",
                         "  Shift+Tab   — Toggle mode",
                         "  PageUp/Down — Scroll conversation",

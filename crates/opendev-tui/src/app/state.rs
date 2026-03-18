@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::history::CommandHistory;
-use crate::widgets::{TodoDisplayItem, WelcomePanelState};
+use crate::widgets::{TaskWatcherFocus, TodoDisplayItem, WelcomePanelState};
 
 use super::{AutonomyLevel, DisplayMessage, OperationMode, ReasoningLevel, ToolExecution};
 
@@ -125,6 +125,16 @@ pub struct AppState {
     pub backgrounding_pending: bool,
     /// Background agent task manager.
     pub bg_agent_manager: crate::managers::BackgroundAgentManager,
+    /// Whether the task watcher panel (Alt+B) is open.
+    pub task_watcher_open: bool,
+    /// Selected index in the task watcher list.
+    pub task_watcher_selected: usize,
+    /// Output scroll offset in the task watcher detail pane.
+    pub task_watcher_output_scroll: u16,
+    /// Which pane has focus in the task watcher.
+    pub task_watcher_focus: TaskWatcherFocus,
+    /// Last task completion flash: (task_id, when).
+    pub last_task_completion: Option<(String, Instant)>,
 }
 
 impl Default for AppState {
@@ -188,6 +198,11 @@ impl Default for AppState {
             plan_content_display: None,
             backgrounding_pending: false,
             bg_agent_manager: crate::managers::BackgroundAgentManager::new(),
+            task_watcher_open: false,
+            task_watcher_selected: 0,
+            task_watcher_output_scroll: 0,
+            task_watcher_focus: TaskWatcherFocus::List,
+            last_task_completion: None,
         }
     }
 }

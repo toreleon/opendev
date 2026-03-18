@@ -3,7 +3,8 @@
 use ratatui::layout;
 
 use crate::widgets::{
-    ConversationWidget, InputWidget, StatusBarWidget, TodoPanelWidget, WelcomePanelWidget,
+    ConversationWidget, InputWidget, StatusBarWidget, TaskWatcherPanel, TodoPanelWidget,
+    UnifiedTaskItem, UnifiedTaskKind, WelcomePanelWidget,
 };
 
 use super::App;
@@ -135,25 +136,32 @@ impl App {
         .session_cost(self.state.session_cost)
         .mcp_status(self.state.mcp_status, self.state.mcp_has_errors)
         .background_tasks(self.state.background_task_count)
-        .file_changes(self.state.file_changes);
+        .file_changes(self.state.file_changes)
+        .spinner_char(if self.state.background_task_count > 0 {
+            Some(self.state.spinner.current())
+        } else {
+            None
+        })
+        .last_completion(
+            self.state
+                .last_task_completion
+                .as_ref()
+                .map(|(id, _)| format!("[{id}] completed")),
+        );
         frame.render_widget(status, chunks[3]);
 
-        // Background task panel overlay (Ctrl+B)
+        // Background task panel overlay (Ctrl+B) — unified quick summary
         if self.state.background_panel_open {
-            let task_items: Vec<crate::widgets::background_tasks::TaskDisplayItem> =
-                if let Ok(mgr) = self.task_manager.try_lock() {
-                    mgr.all_tasks()
-                        .iter()
-                        .map(|t| crate::widgets::background_tasks::TaskDisplayItem {
-                            task_id: t.task_id.clone(),
-                            description: t.description.clone(),
-                            state: t.state.to_string(),
-                            runtime_secs: t.runtime_seconds(),
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+            let unified = self.collect_unified_tasks();
+            let task_items: Vec<crate::widgets::background_tasks::TaskDisplayItem> = unified
+                .iter()
+                .map(|t| crate::widgets::background_tasks::TaskDisplayItem {
+                    task_id: t.task_id.clone(),
+                    description: t.description.clone(),
+                    state: t.state.clone(),
+                    runtime_secs: t.runtime_secs,
+                })
+                .collect();
             let running = task_items.iter().filter(|t| t.state == "running").count();
             let total = task_items.len();
             let panel = crate::widgets::background_tasks::BackgroundTaskPanel::new(
@@ -163,6 +171,120 @@ impl App {
             );
             frame.render_widget(panel, chunks[0]);
         }
+
+        // Task watcher panel overlay (Alt+B)
+        if self.state.task_watcher_open {
+            let unified = self.collect_unified_tasks();
+            let selected = self
+                .state
+                .task_watcher_selected
+                .min(unified.len().saturating_sub(1));
+
+            // Read output for selected task
+            let output_lines: Vec<String> = if let Some(task) = unified.get(selected) {
+                match task.kind {
+                    UnifiedTaskKind::Process => {
+                        if let Ok(mgr) = self.task_manager.try_lock() {
+                            let raw = mgr.read_output(&task.task_id, 50);
+                            if raw.is_empty() {
+                                Vec::new()
+                            } else {
+                                raw.lines().map(|l| l.to_string()).collect()
+                            }
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                    UnifiedTaskKind::Agent => {
+                        // For agents, show metadata as output
+                        let mut lines = Vec::new();
+                        if let Some(agent_task) =
+                            self.state.bg_agent_manager.get_task(&task.task_id)
+                        {
+                            lines.push(format!("Query: {}", agent_task.query));
+                            lines.push(format!("Session: {}", agent_task.session_id));
+                            if let Some(ref tool) = agent_task.current_tool {
+                                lines.push(format!("Current tool: {tool}"));
+                            }
+                            lines.push(format!("Tool calls: {}", agent_task.tool_call_count));
+                            lines.push(format!("Cost: ${:.4}", agent_task.cost_usd));
+                            if let Some(ref summary) = agent_task.result_summary {
+                                lines.push(String::new());
+                                lines.push(format!("Result: {summary}"));
+                            }
+                        }
+                        lines
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+
+            let watcher = TaskWatcherPanel::new(
+                &unified,
+                selected,
+                self.state.task_watcher_focus,
+                &output_lines,
+                self.state.task_watcher_output_scroll,
+                self.state.spinner.tick_count() as usize,
+            );
+            frame.render_widget(watcher, area);
+        }
+    }
+
+    /// Collect unified tasks from both managers, sorted running-first then newest-first.
+    pub(super) fn collect_unified_tasks(&self) -> Vec<UnifiedTaskItem> {
+        let mut items = Vec::new();
+
+        // Agent tasks
+        for task in self.state.bg_agent_manager.all_tasks() {
+            items.push(UnifiedTaskItem {
+                task_id: task.task_id.clone(),
+                kind: UnifiedTaskKind::Agent,
+                description: {
+                    let q: String = task.query.chars().take(50).collect();
+                    q
+                },
+                state: task.state.to_string(),
+                runtime_secs: task.runtime_seconds(),
+                tool_count: Some(task.tool_call_count),
+                cost_usd: Some(task.cost_usd),
+                current_tool: task.current_tool.clone(),
+                pid: None,
+                has_output: false,
+            });
+        }
+
+        // Process tasks
+        if let Ok(mgr) = self.task_manager.try_lock() {
+            for task in mgr.all_tasks() {
+                items.push(UnifiedTaskItem {
+                    task_id: task.task_id.clone(),
+                    kind: UnifiedTaskKind::Process,
+                    description: task.description.clone(),
+                    state: task.state.to_string(),
+                    runtime_secs: task.runtime_seconds(),
+                    tool_count: None,
+                    cost_usd: None,
+                    current_tool: None,
+                    pid: task.pid,
+                    has_output: task.output_file.is_some(),
+                });
+            }
+        }
+
+        // Sort: running first, then newest first
+        items.sort_by(|a, b| {
+            let a_running = a.state == "running";
+            let b_running = b.state == "running";
+            b_running.cmp(&a_running).then(
+                b.runtime_secs
+                    .partial_cmp(&a.runtime_secs)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+        });
+
+        items
     }
 
     /// Shared helper that renders a popup panel matching the Python Textual style:

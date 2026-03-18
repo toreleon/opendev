@@ -57,6 +57,8 @@ impl App {
                     || !self.state.active_subagents.is_empty()
                     || self.state.task_progress.is_some()
                     || !self.state.welcome_panel.fade_complete
+                    || self.state.task_watcher_open
+                    || self.state.last_task_completion.is_some()
                 {
                     self.state.dirty = true;
                 }
@@ -747,6 +749,8 @@ impl App {
                     cost_usd,
                 );
                 let status = if success { "completed" } else { "failed" };
+                self.state.last_task_completion =
+                    Some((task_id.clone(), std::time::Instant::now()));
                 self.push_system_message(format!(
                     "Background agent [{task_id}] {status}: {result_summary} ({tool_call_count} tools, ${cost_usd:.4})"
                 ));

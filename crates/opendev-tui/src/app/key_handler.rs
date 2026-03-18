@@ -3,6 +3,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::event::AppEvent;
+use crate::widgets::TaskWatcherFocus;
 
 use super::{App, AutonomyLevel, OperationMode};
 
@@ -65,6 +66,98 @@ impl App {
                 }
                 KeyCode::Backspace => picker.search_pop(),
                 KeyCode::Char(c) => picker.search_push(c),
+                _ => {}
+            }
+            self.state.dirty = true;
+            return;
+        }
+
+        // Delegate to task watcher panel when open
+        if self.state.task_watcher_open {
+            let task_count = self.collect_unified_tasks().len();
+            match (key.modifiers, key.code) {
+                (_, KeyCode::Char('q')) | (_, KeyCode::Esc) => {
+                    self.state.task_watcher_open = false;
+                }
+                (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                    if task_count > 0 {
+                        self.state.task_watcher_selected =
+                            (self.state.task_watcher_selected + 1) % task_count;
+                        self.state.task_watcher_output_scroll = 0;
+                    }
+                }
+                (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+                    if task_count > 0 {
+                        self.state.task_watcher_selected = if self.state.task_watcher_selected == 0
+                        {
+                            task_count - 1
+                        } else {
+                            self.state.task_watcher_selected - 1
+                        };
+                        self.state.task_watcher_output_scroll = 0;
+                    }
+                }
+                (_, KeyCode::Enter) => {
+                    self.state.task_watcher_focus = match self.state.task_watcher_focus {
+                        TaskWatcherFocus::List => TaskWatcherFocus::Output,
+                        TaskWatcherFocus::Output => TaskWatcherFocus::List,
+                    };
+                }
+                (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
+                    if self.state.task_watcher_focus == TaskWatcherFocus::Output {
+                        self.state.task_watcher_output_scroll =
+                            self.state.task_watcher_output_scroll.saturating_add(10);
+                    }
+                }
+                (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+                    if self.state.task_watcher_focus == TaskWatcherFocus::Output {
+                        self.state.task_watcher_output_scroll =
+                            self.state.task_watcher_output_scroll.saturating_sub(10);
+                    }
+                }
+                (_, KeyCode::Char('x')) => {
+                    let tasks = self.collect_unified_tasks();
+                    if let Some(task) = tasks.get(self.state.task_watcher_selected)
+                        && task.state == "running"
+                    {
+                        let task_id = task.task_id.clone();
+                        match task.kind {
+                            crate::widgets::UnifiedTaskKind::Agent => {
+                                if self.state.bg_agent_manager.kill_task(&task_id) {
+                                    let _ = self
+                                        .event_tx
+                                        .send(AppEvent::BackgroundAgentKilled { task_id });
+                                }
+                            }
+                            crate::widgets::UnifiedTaskKind::Process => {
+                                let _ = self.event_tx.send(AppEvent::KillTask(task_id));
+                            }
+                        }
+                    }
+                }
+                (_, KeyCode::Char('d')) => {
+                    let tasks = self.collect_unified_tasks();
+                    if let Some(task) = tasks.get(self.state.task_watcher_selected)
+                        && task.state != "running"
+                    {
+                        let _task_id = task.task_id.clone();
+                        match task.kind {
+                            crate::widgets::UnifiedTaskKind::Agent => {
+                                self.state.bg_agent_manager.cleanup_old(0.0);
+                            }
+                            crate::widgets::UnifiedTaskKind::Process => {
+                                if let Ok(mut mgr) = self.task_manager.try_lock() {
+                                    mgr.remove_task(&_task_id);
+                                }
+                            }
+                        }
+                        // Adjust selection
+                        let new_count = task_count.saturating_sub(1);
+                        if self.state.task_watcher_selected >= new_count && new_count > 0 {
+                            self.state.task_watcher_selected = new_count - 1;
+                        }
+                    }
+                }
                 _ => {}
             }
             self.state.dirty = true;
@@ -437,6 +530,15 @@ impl App {
                 if !self.state.todo_items.is_empty() {
                     self.state.todo_expanded = !self.state.todo_expanded;
                     self.state.dirty = true;
+                }
+            }
+            // Alt+B — toggle task watcher panel
+            (KeyModifiers::ALT, KeyCode::Char('b')) => {
+                self.state.task_watcher_open = !self.state.task_watcher_open;
+                if self.state.task_watcher_open {
+                    self.state.task_watcher_selected = 0;
+                    self.state.task_watcher_output_scroll = 0;
+                    self.state.task_watcher_focus = TaskWatcherFocus::List;
                 }
             }
             // Ctrl+B — background running agent or toggle panel

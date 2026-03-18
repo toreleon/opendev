@@ -36,6 +36,8 @@ pub struct StatusBarWidget<'a> {
     background_tasks: usize,
     file_changes: Option<(usize, u64, u64)>,
     reasoning_level: Option<ReasoningLevel>,
+    spinner_char: Option<char>,
+    last_completion: Option<String>,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -62,6 +64,8 @@ impl<'a> StatusBarWidget<'a> {
             background_tasks: 0,
             file_changes: None,
             reasoning_level: None,
+            spinner_char: None,
+            last_completion: None,
         }
     }
 
@@ -98,6 +102,16 @@ impl<'a> StatusBarWidget<'a> {
 
     pub fn reasoning_level(mut self, level: ReasoningLevel) -> Self {
         self.reasoning_level = Some(level);
+        self
+    }
+
+    pub fn spinner_char(mut self, ch: Option<char>) -> Self {
+        self.spinner_char = ch;
+        self
+    }
+
+    pub fn last_completion(mut self, info: Option<String>) -> Self {
+        self.last_completion = info;
         self
     }
 
@@ -209,6 +223,15 @@ impl Widget for StatusBarWidget<'_> {
                 "  \u{2502}  ",
                 Style::default().fg(style_tokens::GREY),
             ));
+            // Prepend spinner when tasks are running
+            if let Some(ch) = self.spinner_char {
+                spans.push(Span::styled(
+                    format!("{ch} "),
+                    Style::default()
+                        .fg(style_tokens::CYAN)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             let task_word = if self.background_tasks == 1 {
                 "task"
             } else {
@@ -221,6 +244,20 @@ impl Widget for StatusBarWidget<'_> {
             spans.push(Span::styled(
                 " (Ctrl+B)",
                 Style::default().fg(style_tokens::GREY),
+            ));
+        }
+
+        // Completion flash
+        if let Some(ref info) = self.last_completion {
+            spans.push(Span::styled(
+                "  \u{2502}  ",
+                Style::default().fg(style_tokens::GREY),
+            ));
+            spans.push(Span::styled(
+                info.clone(),
+                Style::default()
+                    .fg(style_tokens::GREEN_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
 

@@ -106,6 +106,22 @@ impl App {
             progress.elapsed_secs = progress.started_at.elapsed().as_secs();
         }
 
+        // Update unified background task count (both managers)
+        let bg_agent_running = self.state.bg_agent_manager.running_count();
+        let bg_process_running = if let Ok(mgr) = self.task_manager.try_lock() {
+            mgr.running_count()
+        } else {
+            0
+        };
+        self.state.background_task_count = bg_agent_running + bg_process_running;
+
+        // Clear task completion flash after 3 seconds
+        if let Some((_, when)) = &self.state.last_task_completion
+            && when.elapsed() > Duration::from_secs(3)
+        {
+            self.state.last_task_completion = None;
+        }
+
         // Auto-scroll if user hasn't manually scrolled up
         if !self.state.user_scrolled {
             self.state.scroll_offset = 0;
