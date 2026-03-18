@@ -42,7 +42,7 @@ pub mod tool_summarizer;
 
 // Re-export key types at crate root for convenience.
 pub use approval::{ApprovalRule, ApprovalRulesManager, RuleAction, RuleScope, RuleType};
-pub use constants::{AutonomyLevel, SAFE_COMMANDS, is_safe_command};
+pub use constants::{AutonomyLevel, SAFE_COMMANDS, extract_command_prefix, is_safe_command};
 pub use cost_tracker::{CostTracker, PricingInfo, TokenUsage};
 pub use error_handler::{ErrorAction, ErrorResult, OperationError};
 pub use errors::{ErrorCategory, StructuredError, classify_api_error};

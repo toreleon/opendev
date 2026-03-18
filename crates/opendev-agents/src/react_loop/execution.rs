@@ -17,7 +17,8 @@ use crate::traits::{AgentError, AgentResult, TaskMonitor};
 use opendev_context::{ArtifactIndex, ContextCompactor};
 use opendev_http::adapted_client::AdaptedClient;
 use opendev_runtime::{
-    CostTracker, TodoManager, TodoStatus, TokenUsage, play_finish_sound, summarize_tool_result,
+    CostTracker, TodoManager, TodoStatus, TokenUsage, extract_command_prefix, play_finish_sound,
+    summarize_tool_result,
 };
 use opendev_tools_core::{ToolContext, ToolRegistry, ToolResult};
 use tokio_util::sync::CancellationToken;
@@ -129,9 +130,11 @@ impl ReactLoop {
         // frontmatter, use that model for subsequent iterations until reset.
         let mut skill_model_override: Option<String> = None;
 
-        // Session-level auto-approved tool patterns. When a user approves a
-        // tool invocation with "yes_remember", the tool:args pattern is added
-        // here so future identical invocations skip the approval prompt.
+        // Session-level auto-approved command prefixes. When a user approves a
+        // tool invocation with "yes_remember", the command prefix is added here
+        // so future commands with the same prefix skip the approval prompt.
+        // For run_command: stores command prefixes (e.g. "cargo test", "npm run").
+        // For MCP tools: stores the tool name (e.g. "mcp__slack__send").
         let mut auto_approved_patterns: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
@@ -875,7 +878,22 @@ impl ReactLoop {
                         // or if the user previously approved this tool with "always".
                         let needs_approval_gate =
                             tool_name == "run_command" || tool_name.starts_with("mcp__");
-                        let auto_approved = auto_approved_patterns.contains(tool_name);
+                        // Check if this command matches a previously auto-approved prefix.
+                        let auto_approved = if tool_name == "run_command" {
+                            let cmd = args_map
+                                .get("command")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .trim();
+                            auto_approved_patterns.iter().any(|pattern| {
+                                let cmd_lower = cmd.to_lowercase();
+                                let pat_lower = pattern.to_lowercase();
+                                cmd_lower == pat_lower
+                                    || cmd_lower.starts_with(&format!("{pat_lower} "))
+                            })
+                        } else {
+                            auto_approved_patterns.contains(tool_name)
+                        };
                         if needs_approval_gate
                             && !permission_allows
                             && !auto_approved
@@ -930,13 +948,26 @@ impl ReactLoop {
                                         continue;
                                     }
                                     Ok(d) => {
-                                        // "yes_remember" — auto-approve this tool for rest of session
+                                        // "yes_remember" — auto-approve this command prefix for rest of session
                                         if d.choice == "yes_remember" {
-                                            auto_approved_patterns.insert(tool_name.to_string());
-                                            debug!(
-                                                tool = tool_name,
-                                                "Auto-approving tool for remainder of session"
-                                            );
+                                            if tool_name == "run_command" {
+                                                // Extract command prefix (first 1-2 tokens) to allow
+                                                // "cargo test --workspace" to match after approving "cargo test".
+                                                let prefix =
+                                                    extract_command_prefix(d.command.trim());
+                                                debug!(
+                                                    prefix = %prefix,
+                                                    "Auto-approving command prefix for remainder of session"
+                                                );
+                                                auto_approved_patterns.insert(prefix);
+                                            } else {
+                                                auto_approved_patterns
+                                                    .insert(tool_name.to_string());
+                                                debug!(
+                                                    tool = tool_name,
+                                                    "Auto-approving tool for remainder of session"
+                                                );
+                                            }
                                         }
                                         // Update command if edited by user
                                         if d.command != command {

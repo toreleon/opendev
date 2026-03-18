@@ -76,7 +76,7 @@ impl App {
             }
             "models" => {
                 match args {
-                    Some(model_name) => {
+                    Some(model_name) if !model_name.is_empty() => {
                         // Direct model set: /models <name>
                         self.state.model = model_name.to_string();
                         self.push_system_message(format!("Model set to: {}", self.state.model));
@@ -85,7 +85,7 @@ impl App {
                             let _ = tx.send(format!("\x00__MODEL_CHANGE__{}", self.state.model));
                         }
                     }
-                    None => {
+                    _ => {
                         // Open interactive model picker
                         let cache_dir = opendev_config::Paths::new(None).global_cache_dir();
                         let picker = crate::controllers::ModelPickerController::from_registry(
@@ -465,6 +465,25 @@ mod tests {
                 .unwrap()
                 .content
                 .contains("gpt-4o")
+        );
+    }
+
+    #[test]
+    fn test_slash_models_trailing_space_opens_picker() {
+        let mut app = App::new();
+        let original_model = app.state.model.clone();
+        app.execute_slash_command("/models ");
+        // Should NOT set model to empty string — should open picker or show "No models"
+        assert_eq!(app.state.model, original_model);
+        let has_picker = app.model_picker_controller.is_some();
+        let has_message = app
+            .state
+            .messages
+            .last()
+            .is_some_and(|m| m.content.contains("No models"));
+        assert!(
+            has_picker || has_message,
+            "Trailing space should open picker, not set empty model"
         );
     }
 

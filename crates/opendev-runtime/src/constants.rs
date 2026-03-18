@@ -48,7 +48,10 @@ impl AutonomyLevel {
 /// Safe commands that can be auto-approved in Semi-Auto mode.
 ///
 /// Shared between TUI and Web approval managers.
+/// Uses prefix matching: `cargo test` matches `cargo test --workspace`.
 pub const SAFE_COMMANDS: &[&str] = &[
+    // ── File inspection & text processing ──
+    "cd",
     "ls",
     "cat",
     "head",
@@ -65,6 +68,32 @@ pub const SAFE_COMMANDS: &[&str] = &[
     "du",
     "df",
     "tree",
+    "diff",
+    "md5sum",
+    "sha256sum",
+    "readlink",
+    "basename",
+    "dirname",
+    "realpath",
+    "sort",
+    "uniq",
+    "cut",
+    "awk",
+    "sed",
+    "tr",
+    "jq",
+    "yq",
+    "column",
+    "hexdump",
+    "xxd",
+    "strings",
+    "nm",
+    "objdump",
+    "ldd",
+    "tar tf",
+    "zip -l",
+    "unzip -l",
+    // ── Git (read-only) ──
     "git status",
     "git log",
     "git diff",
@@ -73,28 +102,423 @@ pub const SAFE_COMMANDS: &[&str] = &[
     "git remote",
     "git tag",
     "git stash list",
+    "git blame",
+    "git rev-parse",
+    "git ls-files",
+    "git config --get",
+    "git stash show",
+    "git shortlog",
+    "git describe",
+    // ── Build & test tools ──
+    "cargo check",
+    "cargo build",
+    "cargo test",
+    "cargo clippy",
+    "cargo fmt",
+    "cargo doc",
+    "cargo add",
+    "cargo update",
+    "cargo install",
+    "npm run",
+    "npm test",
+    "npm ci",
+    "npm install",
+    "npm list",
+    "npm outdated",
+    "npx",
+    "yarn install",
+    "yarn list",
+    "pnpm install",
+    "bun install",
+    "make",
+    "cmake",
+    "ninja",
+    "go build",
+    "go test",
+    "go vet",
+    "go get",
+    "go mod tidy",
+    "go mod download",
+    "pip install",
+    "pip list",
+    "pip show",
+    "pip freeze",
+    "pipenv install",
+    "poetry install",
+    "poetry show",
+    "gem install",
+    "gem list",
+    "bundle install",
+    "bundle list",
+    "composer install",
+    "composer show",
+    "brew install",
+    "brew list",
+    "brew info",
+    "bazel build",
+    "bazel test",
+    "gradle build",
+    "gradle test",
+    "mvn compile",
+    "mvn test",
+    "sbt compile",
+    "sbt test",
+    // ── Language runtimes & version checks ──
     "python --version",
     "python3 --version",
     "node --version",
     "npm --version",
     "cargo --version",
     "go version",
+    "ruby --version",
+    "ruby -v",
+    "java --version",
+    "javac --version",
+    "dotnet --version",
+    "php --version",
+    "perl --version",
+    "swift --version",
+    "kotlin -version",
+    "scala -version",
+    "elixir --version",
+    "lua -v",
+    "deno --version",
+    "bun --version",
+    "rustc --version",
+    "rustup show",
+    // ── Linters & formatters ──
+    "eslint",
+    "prettier",
+    "black",
+    "ruff",
+    "flake8",
+    "mypy",
+    "pylint",
+    "rubocop",
+    "gofmt",
+    "golangci-lint",
+    "shellcheck",
+    "tsc",
+    "biome",
+    // ── Testing frameworks ──
+    "pytest",
+    "jest",
+    "vitest",
+    "mocha",
+    "rspec",
+    "phpunit",
+    "dotnet test",
+    "flutter test",
+    // ── CI/CD & containers (read-only) ──
+    "docker ps",
+    "docker images",
+    "docker logs",
+    "docker inspect",
+    "docker compose ps",
+    "kubectl get",
+    "kubectl describe",
+    "kubectl logs",
+    "gh pr list",
+    "gh pr view",
+    "gh issue list",
+    "gh issue view",
+    "gh run list",
+    "gh run view",
+    "terraform plan",
+    "terraform show",
+    // ── System info ──
+    "uname",
+    "env",
+    "printenv",
+    "whoami",
+    "hostname",
+    "date",
+    "uptime",
+    "id",
+    "lsof",
+    "netstat",
+    "ss",
+    "dig",
+    "nslookup",
+    "ping",
+    "traceroute",
+    "ifconfig",
+    "ip addr",
+    "ps",
+    "pgrep",
+    "free",
+    "vmstat",
+    "iostat",
+    "top -l 1",
+    "curl",
+    "wget",
 ];
 
 /// Check if a command is considered safe for auto-approval.
 ///
-/// Uses strict matching: the command must either equal a safe command exactly
-/// or start with it followed by a space (preventing e.g. `cat` from matching
-/// `catastrophe`).
+/// Performs shell-aware parsing:
+/// 1. Rejects commands containing dangerous shell constructs (`$(...)`, backticks)
+/// 2. Splits on shell operators (`&&`, `||`, `;`, `|`) and checks **every** segment
+/// 3. For each segment, strips leading env vars (`KEY=val`) and path prefixes (`/usr/bin/git`)
+/// 4. Matches the normalized command against `SAFE_COMMANDS` using prefix matching
 pub fn is_safe_command(command: &str) -> bool {
-    if command.is_empty() {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
         return false;
     }
-    let cmd_lower = command.trim().to_lowercase();
+
+    // Reject commands with shell injection constructs.
+    if contains_shell_injection(trimmed) {
+        return false;
+    }
+
+    // Split on shell operators and verify ALL segments are safe.
+    let segments = split_shell_segments(trimmed);
+    if segments.is_empty() {
+        return false;
+    }
+    segments.iter().all(|seg| is_segment_safe(seg))
+}
+
+/// Returns true if the command string contains dangerous shell constructs.
+fn contains_shell_injection(cmd: &str) -> bool {
+    // Command substitution: $(...) or `...`
+    if cmd.contains("$(") || cmd.contains('`') {
+        return true;
+    }
+    // Process substitution: <(...) or >(...)
+    if cmd.contains("<(") || cmd.contains(">(") {
+        return true;
+    }
+    // File output redirects (but allow fd redirects like 2>&1)
+    if contains_file_redirect(cmd) {
+        return true;
+    }
+    false
+}
+
+/// Check if command contains a file output redirect (e.g. `> file`, `>> file`).
+/// Allows fd redirects like `2>&1`, `>&2`.
+fn contains_file_redirect(cmd: &str) -> bool {
+    let bytes = cmd.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'\'' {
+            i += 1;
+            while i < len && bytes[i] != b'\'' {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    break;
+                }
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'>' {
+            if i + 1 < len && bytes[i + 1] == b'&' {
+                i += 2;
+                continue;
+            }
+            if i > 0 && bytes[i - 1].is_ascii_digit() && i + 1 < len && bytes[i + 1] == b'&' {
+                i += 2;
+                continue;
+            }
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Split a command string on shell operators: `&&`, `||`, `;`, `|`.
+fn split_shell_segments(cmd: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let bytes = cmd.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        if bytes[i] == b'\'' {
+            i += 1;
+            while i < len && bytes[i] != b'\'' {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    break;
+                }
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+
+        if i + 1 < len
+            && ((bytes[i] == b'&' && bytes[i + 1] == b'&')
+                || (bytes[i] == b'|' && bytes[i + 1] == b'|'))
+        {
+            let seg = cmd[start..i].trim();
+            if !seg.is_empty() {
+                segments.push(seg);
+            }
+            i += 2;
+            start = i;
+            continue;
+        }
+        if bytes[i] == b';' || (bytes[i] == b'|' && (i + 1 >= len || bytes[i + 1] != b'|')) {
+            let seg = cmd[start..i].trim();
+            if !seg.is_empty() {
+                segments.push(seg);
+            }
+            i += 1;
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+
+    let seg = cmd[start..].trim();
+    if !seg.is_empty() {
+        segments.push(seg);
+    }
+    segments
+}
+
+/// Check if a single command segment (no shell operators) is safe.
+fn is_segment_safe(segment: &str) -> bool {
+    let normalized = normalize_segment(segment);
+    if normalized.is_empty() {
+        return false;
+    }
+    let cmd_lower = normalized.to_lowercase();
     SAFE_COMMANDS.iter().any(|safe| {
         let safe_lower = safe.to_lowercase();
         cmd_lower == safe_lower || cmd_lower.starts_with(&format!("{safe_lower} "))
     })
+}
+
+/// Normalize a command segment by stripping leading env vars and path prefixes.
+fn normalize_segment(segment: &str) -> String {
+    let mut parts: Vec<&str> = segment.split_whitespace().collect();
+    if parts.is_empty() {
+        return String::new();
+    }
+
+    while !parts.is_empty() && is_env_assignment(parts[0]) {
+        parts.remove(0);
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+
+    if let Some(basename) = parts[0].rsplit('/').next()
+        && !basename.is_empty()
+    {
+        parts[0] = basename;
+    }
+
+    parts.join(" ")
+}
+
+/// Check if a token looks like a shell env var assignment: `KEY=VALUE`.
+fn is_env_assignment(token: &str) -> bool {
+    if let Some(eq_pos) = token.find('=') {
+        if eq_pos == 0 {
+            return false;
+        }
+        let name = &token[..eq_pos];
+        let mut chars = name.chars();
+        if let Some(first) = chars.next()
+            && (first.is_ascii_alphabetic() || first == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Tools that use subcommands — matching should include the subcommand.
+const MULTI_WORD_TOOLS: &[&str] = &[
+    "cargo",
+    "git",
+    "npm",
+    "yarn",
+    "pnpm",
+    "go",
+    "pip",
+    "pipenv",
+    "poetry",
+    "gem",
+    "bundle",
+    "composer",
+    "brew",
+    "bazel",
+    "gradle",
+    "mvn",
+    "sbt",
+    "docker",
+    "kubectl",
+    "gh",
+    "terraform",
+    "dotnet",
+    "flutter",
+];
+
+/// Extract a command prefix for auto-approval patterns.
+///
+/// For multi-word tools (e.g. `cargo test`, `git status`), returns the
+/// first two tokens. For single-word tools (e.g. `eslint`), returns one.
+/// Strips leading env var assignments and path prefixes.
+pub fn extract_command_prefix(command: &str) -> String {
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.is_empty() {
+        return String::new();
+    }
+
+    let mut start = 0;
+    while start < parts.len() && is_env_assignment(parts[start]) {
+        start += 1;
+    }
+
+    if start >= parts.len() {
+        return String::new();
+    }
+
+    let binary = parts[start].rsplit('/').next().unwrap_or(parts[start]);
+
+    let bin_lower = binary.to_lowercase();
+    if MULTI_WORD_TOOLS.contains(&bin_lower.as_str())
+        && start + 1 < parts.len()
+        && !parts[start + 1].starts_with('-')
+    {
+        return format!("{} {}", binary, parts[start + 1]);
+    }
+
+    binary.to_string()
 }
 
 #[cfg(test)]
@@ -117,6 +541,223 @@ mod tests {
     fn test_safe_command_case_insensitive() {
         assert!(is_safe_command("LS -la"));
         assert!(is_safe_command("Git Status"));
+    }
+
+    #[test]
+    fn test_safe_command_build_tools() {
+        assert!(is_safe_command("cargo test --workspace"));
+        assert!(is_safe_command("cargo build --release -p opendev-cli"));
+        assert!(is_safe_command("cargo clippy --workspace -- -D warnings"));
+        assert!(is_safe_command("cargo fmt"));
+        assert!(is_safe_command("npm run build"));
+        assert!(is_safe_command("npm test"));
+        assert!(is_safe_command("npm ci"));
+        assert!(is_safe_command("make"));
+        assert!(is_safe_command("go test ./..."));
+        assert!(is_safe_command("pip install -r requirements.txt"));
+        assert!(is_safe_command("bazel build //..."));
+        assert!(is_safe_command("mvn test -pl core"));
+    }
+
+    #[test]
+    fn test_safe_command_version_checks() {
+        assert!(is_safe_command("ruby --version"));
+        assert!(is_safe_command("java --version"));
+        assert!(is_safe_command("rustc --version"));
+        assert!(is_safe_command("rustup show"));
+        assert!(is_safe_command("deno --version"));
+    }
+
+    #[test]
+    fn test_safe_command_linters_and_testing() {
+        assert!(is_safe_command("eslint src/"));
+        assert!(is_safe_command("prettier --check ."));
+        assert!(is_safe_command("ruff check ."));
+        assert!(is_safe_command("pytest -v tests/"));
+        assert!(is_safe_command("jest --coverage"));
+        assert!(is_safe_command("dotnet test"));
+        assert!(is_safe_command("flutter test"));
+    }
+
+    #[test]
+    fn test_safe_command_git_extended() {
+        assert!(is_safe_command("git blame src/main.rs"));
+        assert!(is_safe_command("git rev-parse HEAD"));
+        assert!(is_safe_command("git ls-files"));
+        assert!(is_safe_command("git config --get user.name"));
+        assert!(is_safe_command("git describe --tags"));
+    }
+
+    #[test]
+    fn test_safe_command_containers_and_ci() {
+        assert!(is_safe_command("docker ps -a"));
+        assert!(is_safe_command("docker images"));
+        assert!(is_safe_command("kubectl get pods"));
+        assert!(is_safe_command("kubectl describe deployment foo"));
+        assert!(is_safe_command("gh pr view 123"));
+        assert!(is_safe_command("gh run list"));
+        assert!(is_safe_command("terraform plan"));
+    }
+
+    #[test]
+    fn test_safe_command_system_info() {
+        assert!(is_safe_command("uname -a"));
+        assert!(is_safe_command("whoami"));
+        assert!(is_safe_command("ps aux"));
+        assert!(is_safe_command("curl https://example.com"));
+        assert!(is_safe_command("dig example.com"));
+        assert!(is_safe_command("ping -c 1 localhost"));
+    }
+
+    #[test]
+    fn test_safe_command_text_processing() {
+        assert!(is_safe_command("jq '.foo' data.json"));
+        assert!(is_safe_command("sort -u file.txt"));
+        assert!(is_safe_command("awk '{print $1}' file.txt"));
+        assert!(is_safe_command("sed -n '1,10p' file.txt"));
+        assert!(is_safe_command("tar tf archive.tar.gz"));
+        assert!(is_safe_command("unzip -l archive.zip"));
+    }
+
+    #[test]
+    fn test_unsafe_commands_still_blocked() {
+        assert!(!is_safe_command("rm -rf /"));
+        assert!(!is_safe_command("docker run ubuntu"));
+        assert!(!is_safe_command("kubectl delete pod foo"));
+        assert!(!is_safe_command("git push"));
+        assert!(!is_safe_command("git reset --hard"));
+        assert!(!is_safe_command("chmod 777 /etc/passwd"));
+        assert!(!is_safe_command("sudo anything"));
+    }
+
+    // ── Shell-aware parsing tests ──
+
+    #[test]
+    fn test_env_var_prefix_stripped() {
+        assert!(is_safe_command("RUST_LOG=debug cargo test"));
+        assert!(is_safe_command("CI=true FORCE_COLOR=1 npm test"));
+        assert!(is_safe_command("NODE_ENV=test jest --coverage"));
+        assert!(is_safe_command("GOFLAGS=-count=1 go test ./..."));
+    }
+
+    #[test]
+    fn test_path_prefix_stripped() {
+        assert!(is_safe_command("/usr/bin/git status"));
+        assert!(is_safe_command("/usr/local/bin/cargo test"));
+        assert!(is_safe_command("./node_modules/.bin/jest"));
+        assert!(is_safe_command("./node_modules/.bin/eslint src/"));
+    }
+
+    #[test]
+    fn test_env_and_path_combined() {
+        assert!(is_safe_command(
+            "RUST_LOG=info /usr/bin/cargo test --workspace"
+        ));
+    }
+
+    #[test]
+    fn test_chained_safe_commands() {
+        assert!(is_safe_command("cargo fmt && cargo clippy"));
+        assert!(is_safe_command(
+            "cargo check && cargo test && cargo clippy"
+        ));
+        assert!(is_safe_command("cd src; ls -la"));
+    }
+
+    #[test]
+    fn test_chained_with_unsafe_blocked() {
+        assert!(!is_safe_command("cargo test && rm -rf /"));
+        assert!(!is_safe_command("ls; rm file.txt"));
+        assert!(!is_safe_command("git status && git push"));
+        assert!(!is_safe_command("echo hello || sudo reboot"));
+    }
+
+    #[test]
+    fn test_pipe_all_segments_safe() {
+        assert!(is_safe_command("git log | grep fix"));
+        assert!(is_safe_command("ps aux | grep node"));
+        assert!(is_safe_command("cat file.txt | sort | uniq"));
+    }
+
+    #[test]
+    fn test_pipe_with_unsafe_blocked() {
+        assert!(!is_safe_command("ls | sudo tee /etc/passwd"));
+    }
+
+    #[test]
+    fn test_shell_injection_blocked() {
+        assert!(!is_safe_command("echo $(rm -rf /)"));
+        assert!(!is_safe_command("ls `whoami`"));
+        assert!(!is_safe_command("diff <(cat a) <(cat b)"));
+    }
+
+    #[test]
+    fn test_file_redirect_blocked() {
+        assert!(!is_safe_command("echo hello > /etc/passwd"));
+        assert!(!is_safe_command("cat foo >> bar.txt"));
+    }
+
+    #[test]
+    fn test_stderr_redirect_allowed() {
+        assert!(is_safe_command("cargo test 2>&1"));
+    }
+
+    #[test]
+    fn test_is_env_assignment_helper() {
+        assert!(is_env_assignment("FOO=bar"));
+        assert!(is_env_assignment("_VAR=1"));
+        assert!(is_env_assignment("NODE_ENV=production"));
+        assert!(!is_env_assignment("git"));
+        assert!(!is_env_assignment("=bad"));
+        assert!(!is_env_assignment("123=bad"));
+    }
+
+    #[test]
+    fn test_normalize_segment_helper() {
+        assert_eq!(normalize_segment("cargo test"), "cargo test");
+        assert_eq!(
+            normalize_segment("RUST_LOG=debug cargo test"),
+            "cargo test"
+        );
+        assert_eq!(normalize_segment("/usr/bin/git status"), "git status");
+        assert_eq!(
+            normalize_segment("CI=1 /usr/local/bin/cargo clippy"),
+            "cargo clippy"
+        );
+    }
+
+    #[test]
+    fn test_split_shell_segments_helper() {
+        assert_eq!(split_shell_segments("ls"), vec!["ls"]);
+        assert_eq!(
+            split_shell_segments("cargo fmt && cargo test"),
+            vec!["cargo fmt", "cargo test"]
+        );
+        assert_eq!(
+            split_shell_segments("a; b || c && d"),
+            vec!["a", "b", "c", "d"]
+        );
+        assert_eq!(split_shell_segments("a | b | c"), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_extract_command_prefix() {
+        assert_eq!(
+            extract_command_prefix("cargo test --workspace"),
+            "cargo test"
+        );
+        assert_eq!(extract_command_prefix("git status"), "git status");
+        assert_eq!(extract_command_prefix("eslint src/"), "eslint");
+        assert_eq!(
+            extract_command_prefix("RUST_LOG=debug cargo build"),
+            "cargo build"
+        );
+        assert_eq!(
+            extract_command_prefix("/usr/bin/cargo clippy"),
+            "cargo clippy"
+        );
+        assert_eq!(extract_command_prefix("npm run build"), "npm run");
+        assert_eq!(extract_command_prefix("cargo --version"), "cargo");
     }
 
     #[test]

@@ -441,8 +441,22 @@ impl SubagentRunner for SimpleReactRunner {
                     }
 
                     // Tool approval gate for run_command (mirrors ReactLoop behavior)
-                    let needs_approval =
-                        name == "run_command" && !auto_approved_patterns.contains(&name);
+                    let auto_approved = if name == "run_command" {
+                        let cmd = args
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .trim();
+                        auto_approved_patterns.iter().any(|pattern| {
+                            let cmd_lower = cmd.to_lowercase();
+                            let pat_lower = pattern.to_lowercase();
+                            cmd_lower == pat_lower
+                                || cmd_lower.starts_with(&format!("{pat_lower} "))
+                        })
+                    } else {
+                        auto_approved_patterns.contains(&name)
+                    };
+                    let needs_approval = name == "run_command" && !auto_approved;
                     if needs_approval && let Some(approval_tx) = ctx.tool_approval_tx {
                         let command = args
                             .get("command")
@@ -485,11 +499,20 @@ impl SubagentRunner for SimpleReactRunner {
                                 }
                                 Ok(d) => {
                                     if d.choice == "yes_remember" {
-                                        auto_approved_patterns.insert(name.clone());
-                                        debug!(
-                                            tool = %name,
-                                            "Auto-approving tool for remainder of session"
-                                        );
+                                        if name == "run_command" {
+                                            let prefix = opendev_runtime::extract_command_prefix(d.command.trim());
+                                            debug!(
+                                                prefix = %prefix,
+                                                "Auto-approving command prefix for remainder of session"
+                                            );
+                                            auto_approved_patterns.insert(prefix);
+                                        } else {
+                                            auto_approved_patterns.insert(name.clone());
+                                            debug!(
+                                                tool = %name,
+                                                "Auto-approving tool for remainder of session"
+                                            );
+                                        }
                                     }
                                     if d.command != command {
                                         args.insert(
