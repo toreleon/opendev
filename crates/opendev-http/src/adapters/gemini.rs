@@ -313,9 +313,9 @@ impl GeminiAdapter {
     /// Map reasoning effort level to a thinking budget token count.
     fn thinking_budget(effort: &str) -> u64 {
         match effort {
-            "low" => 4096,
+            "low" => 4000,
             "high" => 24576,
-            _ => 10000, // medium
+            _ => 16000, // medium
         }
     }
 }
@@ -406,13 +406,59 @@ impl super::base::ProviderAdapter for GeminiAdapter {
     }
 
     fn api_url(&self) -> &str {
-        // The full URL includes the model name, built dynamically
-        // Callers should use this base + model to construct the final URL
-        // but for the adapter interface we return the full endpoint.
-        // This is a computed value; we leak a string for the static lifetime workaround.
-        // Instead, we store it. But the trait returns &str, so we need a stored value.
-        // We'll return the base URL; the client builder should construct the full URL.
         &self.base_url
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    fn enable_streaming(&self, _payload: &mut Value) {
+        // Gemini doesn't use a payload flag — streaming is via URL endpoint
+    }
+
+    fn streaming_url(&self, base_url: &str) -> Option<String> {
+        // Transform generateContent → streamGenerateContent?alt=sse
+        Some(base_url.replace(":generateContent", ":streamGenerateContent?alt=sse"))
+    }
+
+    fn parse_stream_event(
+        &self,
+        _event_type: &str,
+        data: &Value,
+    ) -> Option<crate::streaming::StreamEvent> {
+        use crate::streaming::StreamEvent;
+
+        // Gemini streams partial generateContent responses as data: lines.
+        // Each chunk has candidates[0].content.parts with text or thought parts.
+        let candidates = data.get("candidates")?.as_array()?;
+        let candidate = candidates.first()?;
+        let parts = candidate
+            .get("content")?
+            .get("parts")?
+            .as_array()?;
+
+        for part in parts {
+            let is_thought = part.get("thought").and_then(|t| t.as_bool()) == Some(true);
+            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                if is_thought {
+                    return Some(StreamEvent::ReasoningDelta(text.to_string()));
+                } else {
+                    return Some(StreamEvent::TextDelta(text.to_string()));
+                }
+            }
+        }
+
+        // Check for error
+        if let Some(error) = data.get("error") {
+            let msg = error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown Gemini error");
+            return Some(StreamEvent::Error(msg.to_string()));
+        }
+
+        None
     }
 }
 
