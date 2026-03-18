@@ -7,7 +7,9 @@ use crate::adapters::base::ProviderAdapter;
 use crate::adapters::detect_provider_from_key;
 use crate::client::HttpClient;
 use crate::models::{HttpError, HttpResult};
+use crate::streaming::{StreamCallback, StreamEvent};
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 
 /// HTTP client with provider-specific request/response adaptation.
 ///
@@ -110,6 +112,183 @@ impl AdaptedClient {
         }
 
         Ok(result)
+    }
+
+    /// Whether streaming is supported for this client's adapter.
+    pub fn supports_streaming(&self) -> bool {
+        self.adapter
+            .as_ref()
+            .map(|a| a.supports_streaming())
+            .unwrap_or(false)
+    }
+
+    /// POST JSON with SSE streaming, calling the callback for each event.
+    ///
+    /// Falls back to `post_json` if the adapter doesn't support streaming.
+    /// Returns the final accumulated response as an `HttpResult`.
+    pub async fn post_json_streaming(
+        &self,
+        payload: &serde_json::Value,
+        cancel: Option<&CancellationToken>,
+        callback: &dyn StreamCallback,
+    ) -> Result<HttpResult, HttpError> {
+        let adapter = match &self.adapter {
+            Some(a) if a.supports_streaming() => a,
+            _ => {
+                return self.post_json(payload, cancel).await;
+            }
+        };
+
+        // Convert request and add streaming flag
+        let mut converted = adapter.convert_request(payload.clone());
+        adapter.enable_streaming(&mut converted);
+
+        let url = adapter.api_url();
+
+        // Send request and get raw response for streaming
+        debug!(url = %url, "Sending streaming request");
+        let response = self
+            .client
+            .send_streaming_request(url, &converted, cancel)
+            .await?;
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        debug!(content_type = %content_type, status = %response.status(), "Streaming response headers received");
+        // If the response isn't SSE, fall back to reading as JSON
+        if !content_type.contains("text/event-stream") {
+            warn!(content_type = %content_type, "Streaming fallback: response is not SSE, reading as JSON");
+            let body = response
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|e| HttpError::Other(format!("Failed to parse response: {e}")))?;
+
+            // Check for API error
+            if let Some(error_obj) = body.get("error") {
+                let msg = error_obj
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Unknown API error");
+                return Err(HttpError::Other(format!("API error: {msg}")));
+            }
+
+            let converted_body = adapter.convert_response(body);
+            return Ok(HttpResult::ok(200, converted_body));
+        }
+
+        // Read SSE events from the response body
+        let mut final_body: Option<serde_json::Value> = None;
+        let mut line_buf = String::new();
+        let mut event_type: Option<String> = None;
+
+        use futures::StreamExt;
+        let mut byte_stream = response.bytes_stream();
+
+        // Buffer for incomplete UTF-8 or line fragments
+        let mut buf = Vec::new();
+
+        while let Some(chunk_result) = byte_stream.next().await {
+            // Check cancellation
+            if let Some(token) = cancel
+                && token.is_cancelled()
+            {
+                return Ok(HttpResult::interrupted());
+            }
+
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(error = %e, "SSE stream error");
+                    callback.on_event(&StreamEvent::Error(e.to_string()));
+                    break;
+                }
+            };
+
+            buf.extend_from_slice(&chunk);
+
+            // Process complete lines from the buffer
+            while let Some(newline_pos) = buf.iter().position(|&b| b == b'\n') {
+                let line_bytes = buf.drain(..=newline_pos).collect::<Vec<u8>>();
+                let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
+
+                if line.is_empty() {
+                    // Empty line = end of SSE event block
+                    if !line_buf.is_empty()
+                        && let Some(data_json) = crate::streaming::parse_sse_data(&line_buf)
+                    {
+                        // Get event type from SSE `event:` line or from JSON `type` field.
+                        // OpenAI Responses API sends only `data:` lines with a `type` field
+                        // in the JSON payload (no `event:` lines).
+                        let et = event_type.as_deref().unwrap_or_else(|| {
+                            data_json.get("type").and_then(|t| t.as_str()).unwrap_or("")
+                        });
+                        if let Some(stream_event) = adapter.parse_stream_event(et, &data_json) {
+                            if let StreamEvent::Done(ref body) = stream_event {
+                                final_body = Some(body.clone());
+                            }
+                            callback.on_event(&stream_event);
+                        }
+                    }
+                    line_buf.clear();
+                    event_type = None;
+                    continue;
+                }
+
+                if let Some(et) = line.strip_prefix("event: ") {
+                    event_type = Some(et.to_string());
+                } else if line.starts_with("data: ") {
+                    // Process any previous pending data line before starting a new one
+                    if !line_buf.is_empty() {
+                        if let Some(data_json) = crate::streaming::parse_sse_data(&line_buf) {
+                            let et = event_type.as_deref().unwrap_or_else(|| {
+                                data_json.get("type").and_then(|t| t.as_str()).unwrap_or("")
+                            });
+                            if let Some(stream_event) = adapter.parse_stream_event(et, &data_json) {
+                                if let StreamEvent::Done(ref body) = stream_event {
+                                    final_body = Some(body.clone());
+                                }
+                                callback.on_event(&stream_event);
+                            }
+                        }
+                        event_type = None;
+                    }
+                    line_buf = line;
+                }
+                // Ignore other SSE fields (id:, retry:, comments)
+            }
+        }
+
+        // Process any remaining data in buffer
+        if !line_buf.is_empty()
+            && let Some(data_json) = crate::streaming::parse_sse_data(&line_buf)
+        {
+            let et = event_type
+                .as_deref()
+                .unwrap_or_else(|| data_json.get("type").and_then(|t| t.as_str()).unwrap_or(""));
+            if let Some(stream_event) = adapter.parse_stream_event(et, &data_json) {
+                if let StreamEvent::Done(ref body) = stream_event {
+                    final_body = Some(body.clone());
+                }
+                callback.on_event(&stream_event);
+            }
+        }
+
+        // Convert the final accumulated response through the adapter
+        match final_body {
+            Some(body) => {
+                let converted = adapter.convert_response(body);
+                debug!("Streaming complete, final response converted");
+                Ok(HttpResult::ok(200, converted))
+            }
+            None => Ok(HttpResult::fail(
+                "No complete response received from stream",
+                false,
+            )),
+        }
     }
 
     /// Get the configured API URL.

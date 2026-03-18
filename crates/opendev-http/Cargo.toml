@@ -18,6 +18,7 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
 dirs = "5"
 httpdate = "1"
 

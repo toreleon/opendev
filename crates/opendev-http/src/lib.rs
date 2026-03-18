@@ -13,6 +13,7 @@ pub mod circuit_breaker;
 pub mod client;
 pub mod models;
 pub mod rotation;
+pub mod streaming;
 pub mod user_store;
 
 pub use adapted_client::AdaptedClient;

@@ -386,6 +386,49 @@ impl super::base::ProviderAdapter for OpenAiAdapter {
     fn api_url(&self) -> &str {
         &self.api_url
     }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    fn enable_streaming(&self, payload: &mut Value) {
+        payload["stream"] = json!(true);
+    }
+
+    fn parse_stream_event(
+        &self,
+        event_type: &str,
+        data: &Value,
+    ) -> Option<crate::streaming::StreamEvent> {
+        use crate::streaming::StreamEvent;
+        match event_type {
+            "response.output_text.delta" => {
+                let delta = data.get("delta")?.as_str()?;
+                Some(StreamEvent::TextDelta(delta.to_string()))
+            }
+            "response.reasoning_summary_text.delta" => {
+                let delta = data.get("delta")?.as_str()?;
+                Some(StreamEvent::ReasoningDelta(delta.to_string()))
+            }
+            "response.completed" => {
+                let response = data.get("response")?;
+                Some(StreamEvent::Done(response.clone()))
+            }
+            "response.incomplete" => {
+                // Incomplete response — still extract what we have
+                let response = data.get("response")?;
+                Some(StreamEvent::Done(response.clone()))
+            }
+            "error" => {
+                let msg = data
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Unknown streaming error");
+                Some(StreamEvent::Error(msg.to_string()))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

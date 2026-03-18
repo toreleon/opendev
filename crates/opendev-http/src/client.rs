@@ -337,6 +337,73 @@ impl HttpClient {
         }
     }
 
+    /// Send a POST request and return the raw response for streaming.
+    ///
+    /// Unlike `post_json`, this does NOT read the response body. The caller
+    /// is responsible for consuming the response (e.g., reading SSE lines).
+    /// Does NOT retry — retries are incompatible with streaming.
+    pub async fn send_streaming_request(
+        &self,
+        url: &str,
+        payload: &serde_json::Value,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<reqwest::Response, HttpError> {
+        // Check circuit breaker
+        if let Some(cb) = &self.circuit_breaker {
+            cb.check()?;
+        }
+
+        let request_id = Uuid::new_v4().to_string();
+        debug!(request_id = %request_id, api_url = %url, "Sending streaming LLM request");
+
+        let request = self
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+            .header(
+                HeaderName::from_static("x-request-id"),
+                HeaderValue::from_str(&request_id)
+                    .unwrap_or_else(|_| HeaderValue::from_static("unknown")),
+            )
+            .json(payload)
+            .send();
+
+        let response = match cancel {
+            Some(token) => {
+                tokio::select! {
+                    resp = request => resp,
+                    _ = token.cancelled() => {
+                        return Err(HttpError::Interrupted);
+                    }
+                }
+            }
+            None => request.await,
+        };
+
+        let resp = response?;
+        let status = resp.status().as_u16();
+
+        if status >= 400 {
+            let body = resp.text().await.unwrap_or_default();
+            let error_msg = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| {
+                    v.get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|m| m.as_str())
+                        .map(String::from)
+                })
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            warn!(request_id = %request_id, status, error = %error_msg, "Streaming request failed");
+            return Err(HttpError::Other(format!(
+                "[request_id={request_id}] {error_msg}"
+            )));
+        }
+
+        self.cb_record_success();
+        Ok(resp)
+    }
+
     /// Get the configured API URL.
     pub fn api_url(&self) -> &str {
         &self.api_url

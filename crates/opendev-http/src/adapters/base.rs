@@ -34,4 +34,27 @@ pub trait ProviderAdapter: Send + Sync + std::fmt::Debug {
     fn extra_headers(&self) -> Vec<(String, String)> {
         vec![]
     }
+
+    /// Whether this adapter supports streaming responses.
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    /// Add streaming parameters to the request payload.
+    ///
+    /// Called before sending when streaming is requested. The adapter should
+    /// add provider-specific streaming flags (e.g., `stream: true`).
+    fn enable_streaming(&self, _payload: &mut Value) {}
+
+    /// Parse a single SSE event into a stream event.
+    ///
+    /// `event_type` is the SSE event name (from `event:` line).
+    /// `data` is the parsed JSON from the `data:` line.
+    fn parse_stream_event(
+        &self,
+        _event_type: &str,
+        _data: &Value,
+    ) -> Option<crate::streaming::StreamEvent> {
+        None
+    }
 }

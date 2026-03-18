@@ -2064,6 +2064,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dirs 5.0.1",
+ "futures",
  "httpdate",
  "opendev-config",
  "opendev-models",

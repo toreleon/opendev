@@ -240,18 +240,53 @@ impl ReactLoop {
             debug!(iteration, model = %payload["model"], "ReAct iteration");
 
             let llm_start = Instant::now();
-            let http_result = async {
-                http_client
-                    .post_json(&payload, cancel)
-                    .await
-                    .map_err(|e| AgentError::LlmError(e.to_string()))
-            }
-            .instrument(info_span!(
-                "llm_call",
-                iteration = iteration,
-                model = %payload["model"],
-            ))
-            .await?;
+            let streaming = http_client.supports_streaming();
+            debug!(streaming, "LLM call mode");
+            let http_result = if streaming {
+                // Use SSE streaming — fires callbacks as chunks arrive
+                let cb = event_callback;
+                let stream_cb = opendev_http::streaming::FnStreamCallback(|event| {
+                    use opendev_http::streaming::StreamEvent;
+                    match event {
+                        StreamEvent::TextDelta(text) => {
+                            if let Some(cb) = cb {
+                                cb.on_agent_chunk(text);
+                            }
+                        }
+                        StreamEvent::ReasoningDelta(text) => {
+                            if let Some(cb) = cb {
+                                cb.on_reasoning(text);
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+                async {
+                    http_client
+                        .post_json_streaming(&payload, cancel, &stream_cb)
+                        .await
+                        .map_err(|e| AgentError::LlmError(e.to_string()))
+                }
+                .instrument(info_span!(
+                    "llm_call",
+                    iteration = iteration,
+                    model = %payload["model"],
+                ))
+                .await?
+            } else {
+                async {
+                    http_client
+                        .post_json(&payload, cancel)
+                        .await
+                        .map_err(|e| AgentError::LlmError(e.to_string()))
+                }
+                .instrument(info_span!(
+                    "llm_call",
+                    iteration = iteration,
+                    model = %payload["model"],
+                ))
+                .await?
+            };
             let llm_latency_ms = llm_start.elapsed().as_millis() as u64;
 
             if http_result.interrupted {
