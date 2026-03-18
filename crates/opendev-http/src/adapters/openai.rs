@@ -360,8 +360,12 @@ impl super::base::ProviderAdapter for OpenAiAdapter {
         if let Some(ref effort) = reasoning_effort {
             responses_payload["reasoning"] = json!({
                 "effort": effort,
-                "summary": "detailed",
+                "summary": "auto",
             });
+            // Include encrypted reasoning content for full thinking traces.
+            // Without this, OpenAI only returns brief summaries.
+            responses_payload["include"] =
+                json!(["reasoning.encrypted_content"]);
             // OpenAI rejects temperature when reasoning is set
         } else if !Self::is_reasoning_model(&payload) {
             // Temperature (only when reasoning is NOT active)
