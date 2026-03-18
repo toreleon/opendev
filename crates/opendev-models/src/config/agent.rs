@@ -22,11 +22,17 @@ pub struct ModelVariant {
 /// Allows defining new agents or overriding builtin agents directly
 /// in the config file. All fields are optional — only specified fields
 /// are applied as overrides.
+///
+/// Also used for model role entries (e.g. `agents.compact`) where only
+/// `model` and `provider` are relevant.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentConfigInline {
     /// Model override (e.g. "gpt-4o", "claude-opus-4-5").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Provider override (e.g. "openai", "google").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// System prompt override or addition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,

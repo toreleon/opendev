@@ -195,18 +195,6 @@ pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_vlm_provider: Option<String>,
 
-    // Critique model
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_critique: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_critique_provider: Option<String>,
-
-    // Compact model
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_compact: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_compact_provider: Option<String>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -354,10 +342,6 @@ impl Default for AppConfig {
             model: default_model(),
             model_vlm: None,
             model_vlm_provider: None,
-            model_critique: None,
-            model_critique_provider: None,
-            model_compact: None,
-            model_compact_provider: None,
             api_key: None,
             api_base_url: None,
             max_tokens: 16384,
@@ -395,6 +379,19 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Resolve the model and provider for a named agent role (e.g. "compact").
+    ///
+    /// Looks up `self.agents[role]` and falls back to the primary model/provider.
+    pub fn resolve_agent_role(&self, role: &str) -> (String, String) {
+        if let Some(agent) = self.agents.get(role) {
+            let model = agent.model.as_deref().unwrap_or(&self.model);
+            let provider = agent.provider.as_deref().unwrap_or(&self.model_provider);
+            (model.to_string(), provider.to_string())
+        } else {
+            (self.model.clone(), self.model_provider.clone())
+        }
+    }
+
     /// Get the API key from config or the environment.
     pub fn get_api_key(&self) -> Result<String, String> {
         if let Some(ref key) = self.api_key {
