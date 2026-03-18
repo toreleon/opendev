@@ -23,8 +23,6 @@ export function SessionModelModal({ sessionId, sessionLabel, onClose }: SessionM
   const [normalModel, setNormalModel] = useState('');
   const [thinkingProvider, setThinkingProvider] = useState('');
   const [thinkingModel, setThinkingModel] = useState('');
-  const [critiqueProvider, setCritiqueProvider] = useState('');
-  const [critiqueModel, setCritiqueModel] = useState('');
   const [compactProvider, setCompactProvider] = useState('');
   const [compactModel, setCompactModel] = useState('');
   const [visionProvider, setVisionProvider] = useState('');
@@ -36,8 +34,6 @@ export function SessionModelModal({ sessionId, sessionLabel, onClose }: SessionM
   const [normalVerifyError, setNormalVerifyError] = useState<string>();
   const [thinkingVerifyStatus, setThinkingVerifyStatus] = useState<VerifyStatus>('idle');
   const [thinkingVerifyError, setThinkingVerifyError] = useState<string>();
-  const [critiqueVerifyStatus, setCritiqueVerifyStatus] = useState<VerifyStatus>('idle');
-  const [critiqueVerifyError, setCritiqueVerifyError] = useState<string>();
   const [compactVerifyStatus, setCompactVerifyStatus] = useState<VerifyStatus>('idle');
   const [compactVerifyError, setCompactVerifyError] = useState<string>();
   const [visionVerifyStatus, setVisionVerifyStatus] = useState<VerifyStatus>('idle');
@@ -69,8 +65,6 @@ export function SessionModelModal({ sessionId, sessionLabel, onClose }: SessionM
       setNormalModel(overlayData.model || configData.model || '');
       setThinkingProvider(overlayData.model_thinking_provider || configData.model_thinking_provider || '');
       setThinkingModel(overlayData.model_thinking || configData.model_thinking || '');
-      setCritiqueProvider(overlayData.model_critique_provider || configData.model_critique_provider || '');
-      setCritiqueModel(overlayData.model_critique || configData.model_critique || '');
       setCompactProvider(overlayData.model_compact_provider || configData.model_compact_provider || '');
       setCompactModel(overlayData.model_compact || configData.model_compact || '');
       setVisionProvider(overlayData.model_vlm_provider || configData.model_vlm_provider || '');
@@ -122,9 +116,6 @@ export function SessionModelModal({ sessionId, sessionLabel, onClose }: SessionM
       thinkingProvider && thinkingModel
         ? verifySingleModel(thinkingProvider, thinkingModel, setThinkingVerifyStatus, setThinkingVerifyError)
         : Promise.resolve(true),
-      critiqueProvider && critiqueModel
-        ? verifySingleModel(critiqueProvider, critiqueModel, setCritiqueVerifyStatus, setCritiqueVerifyError)
-        : Promise.resolve(true),
       compactProvider && compactModel
         ? verifySingleModel(compactProvider, compactModel, setCompactVerifyStatus, setCompactVerifyError)
         : Promise.resolve(true),
@@ -159,10 +150,6 @@ export function SessionModelModal({ sessionId, sessionLabel, onClose }: SessionM
         model: normalModel || null,
         model_thinking_provider: thinkingProvider || null,
         model_thinking: thinkingModel || null,
-        model_critique_provider: critiqueProvider || null,
-        model_critique: critiqueModel || null,
-        model_compact_provider: compactProvider || null,
-        model_compact: compactModel || null,
         model_vlm_provider: visionProvider || null,
         model_vlm: visionModel || null,
       });
@@ -191,8 +178,6 @@ export function SessionModelModal({ sessionId, sessionLabel, onClose }: SessionM
       setNormalModel(configData.model || '');
       setThinkingProvider(configData.model_thinking_provider || '');
       setThinkingModel(configData.model_thinking || '');
-      setCritiqueProvider(configData.model_critique_provider || '');
-      setCritiqueModel(configData.model_critique || '');
       setCompactProvider(configData.model_compact_provider || '');
       setCompactModel(configData.model_compact || '');
       setVisionProvider(configData.model_vlm_provider || '');
@@ -283,22 +268,6 @@ export function SessionModelModal({ sessionId, sessionLabel, onClose }: SessionM
                 verifyStatus={thinkingVerifyStatus}
                 verifyError={thinkingVerifyError}
                 onVerify={(p, m) => verifySingleModel(p, m, setThinkingVerifyStatus, setThinkingVerifyError)}
-              />
-
-              <ModelSlot
-                title="Critique Model"
-                description="Self-critique (falls back to Thinking)"
-                icon={<svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
-                providers={providers}
-                selectedProvider={critiqueProvider}
-                selectedModel={critiqueModel}
-                onProviderChange={(p) => { setCritiqueProvider(p); setCritiqueVerifyStatus('idle'); }}
-                onModelChange={(m) => { setCritiqueModel(m); setCritiqueVerifyStatus('idle'); }}
-                optional
-                notSetText="Use Thinking Model"
-                verifyStatus={critiqueVerifyStatus}
-                verifyError={critiqueVerifyError}
-                onVerify={(p, m) => verifySingleModel(p, m, setCritiqueVerifyStatus, setCritiqueVerifyError)}
               />
 
               <ModelSlot

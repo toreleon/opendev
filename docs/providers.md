@@ -83,12 +83,11 @@ All of these follow the same pattern -- export the env var and set the provider 
 
 ## Workflow Model Binding
 
-OpenDev is a compound AI system. Instead of one model doing everything, it has 5 workflow slots, each independently bound to a model and provider:
+OpenDev is a compound AI system. Instead of one model doing everything, it has workflow slots, each independently bound to a model and provider:
 
 - **Normal** (`model` + `model_provider`) -- The primary execution model. Handles coding tasks, tool calls, and general conversation. This is the only required slot.
 - **Thinking** (`model_thinking` + `model_thinking_provider`) -- Used for complex reasoning in plan mode and deep analysis. Falls back to Normal if not set.
-- **Compact** (`model_compact` + `model_compact_provider`) -- Summarizes conversation history when context gets too long. Falls back to Normal if not set.
-- **Critique** (`model_critique` + `model_critique_provider`) -- Self-critiques the agent's reasoning and output. Falls back to Thinking, then Normal if not set.
+- **Compact** (`agents.compact`) -- Summarizes conversation history when context gets too long. Falls back to Normal if not set. Configured via the `agents` map (see below).
 - **VLM** (`model_vlm` + `model_vlm_provider`) -- Processes images and screenshots. Falls back to Normal if the Normal model has vision capability; otherwise unavailable.
 
 ### Fallback Chains
@@ -97,7 +96,6 @@ You only need to configure the slots you want to customize. Unset slots fall bac
 
 - Thinking -> Normal
 - Compact -> Normal
-- Critique -> Thinking -> Normal
 - VLM -> Normal (only if Normal model supports vision)
 
 ### Example: Mixed-Provider Configuration
@@ -112,12 +110,16 @@ Use Claude for execution, OpenAI o3 for thinking, and a fast Fireworks model for
   "model_thinking_provider": "openai",
   "model_thinking": "o3",
 
-  "model_compact_provider": "fireworks",
-  "model_compact": "accounts/fireworks/models/kimi-k2-instruct-0905"
+  "agents": {
+    "compact": {
+      "model": "accounts/fireworks/models/kimi-k2-instruct-0905",
+      "provider": "fireworks"
+    }
+  }
 }
 ```
 
-This requires both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` and `FIREWORKS_API_KEY` to be set.
+This requires `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `FIREWORKS_API_KEY` to be set.
 
 ## Configuration Files
 

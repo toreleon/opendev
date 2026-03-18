@@ -16,10 +16,6 @@ pub struct ConfigUpdate {
     pub model: Option<String>,
     pub model_vlm_provider: Option<String>,
     pub model_vlm: Option<String>,
-    pub model_critique_provider: Option<String>,
-    pub model_critique: Option<String>,
-    pub model_compact_provider: Option<String>,
-    pub model_compact: Option<String>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub enable_bash: Option<bool>,
@@ -71,15 +67,27 @@ async fn get_config(State(state): State<AppState>) -> Result<Json<serde_json::Va
     let autonomy_level = state.autonomy_level().await;
     let git_branch = state.git_branch();
 
+    // Resolve compact agent role for API consumers
+    let (compact_model, compact_provider) = config.resolve_agent_role("compact");
+    let compact_model_opt =
+        if compact_model == config.model && compact_provider == config.model_provider {
+            None
+        } else {
+            Some(&compact_model)
+        };
+    let compact_provider_opt = if compact_model_opt.is_none() {
+        None
+    } else {
+        Some(&compact_provider)
+    };
+
     Ok(Json(serde_json::json!({
         "model_provider": config.model_provider,
         "model": config.model,
         "model_vlm_provider": config.model_vlm_provider,
         "model_vlm": config.model_vlm,
-        "model_critique_provider": config.model_critique_provider,
-        "model_critique": config.model_critique,
-        "model_compact_provider": config.model_compact_provider,
-        "model_compact": config.model_compact,
+        "model_compact_provider": compact_provider_opt,
+        "model_compact": compact_model_opt,
         "api_key": masked_key,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
@@ -109,18 +117,6 @@ async fn update_config(
     }
     if let Some(model) = update.model_vlm {
         config.model_vlm = Some(model);
-    }
-    if let Some(provider) = update.model_critique_provider {
-        config.model_critique_provider = Some(provider);
-    }
-    if let Some(model) = update.model_critique {
-        config.model_critique = Some(model);
-    }
-    if let Some(provider) = update.model_compact_provider {
-        config.model_compact_provider = Some(provider);
-    }
-    if let Some(model) = update.model_compact {
-        config.model_compact = Some(model);
     }
     if let Some(temp) = update.temperature {
         config.temperature = temp;

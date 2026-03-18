@@ -14,10 +14,6 @@ pub struct SessionModelUpdate {
     pub model: Option<String>,
     pub model_vlm_provider: Option<String>,
     pub model_vlm: Option<String>,
-    pub model_critique_provider: Option<String>,
-    pub model_critique: Option<String>,
-    pub model_compact_provider: Option<String>,
-    pub model_compact: Option<String>,
 }
 
 /// Get session model overlay.
@@ -64,18 +60,6 @@ pub(super) async fn update_session_model(
     }
     if let Some(v) = body.model_vlm {
         overlay.insert("model_vlm".to_string(), serde_json::json!(v));
-    }
-    if let Some(v) = body.model_critique_provider {
-        overlay.insert("model_critique_provider".to_string(), serde_json::json!(v));
-    }
-    if let Some(v) = body.model_critique {
-        overlay.insert("model_critique".to_string(), serde_json::json!(v));
-    }
-    if let Some(v) = body.model_compact_provider {
-        overlay.insert("model_compact_provider".to_string(), serde_json::json!(v));
-    }
-    if let Some(v) = body.model_compact {
-        overlay.insert("model_compact".to_string(), serde_json::json!(v));
     }
 
     if overlay.is_empty() {

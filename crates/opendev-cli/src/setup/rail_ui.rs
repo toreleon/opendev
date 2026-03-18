@@ -5,8 +5,8 @@
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
 use crossterm::terminal::{self, Clear, ClearType};
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── Colors ─────────────────────────────────────────────────────────────────
 

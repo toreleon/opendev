@@ -160,11 +160,11 @@ Port the complete `wizard.py` flow. The current Rust wizard has 5 steps; the Pyt
 3. **Step 2: API Key** — `get_api_key()` with env detection + `rail_prompt(password=true)`
 4. **Step 3: Validate** — `rail_confirm("Validate API key?")` → `validate_api_key()`
 5. **Step 4: Select Model** — `select_model()` using `InteractiveMenu` with "Custom Model" option
-6. **Step 5: Thinking Model** — `configure_slot_model("Thinking", "reasoning", "5 of 9")`
-7. **Step 6: Critique Model** — `configure_slot_model("Critique", "reasoning", "6 of 9")`
-8. **Step 7: Vision Model** — `configure_slot_model("Vision", "vision", "7 of 9")`
-9. **Step 8: Compact Model** — `configure_slot_model("Compact", "any", "8 of 9")`
-10. **Step 9: Summary + Save** — `show_config_summary()` + `rail_confirm("Save?")` + `save_config()`
+6. **Step 5: Vision Model** — `configure_slot("Vision", "image & screenshot analysis")`
+7. **Step 6: Compact Model** — `configure_slot("Compact", "context summarization")` (stored in `agents.compact`)
+8. **Step 7: Summary + Save** — `show_config_summary()` + `rail_confirm("Save?")` + `save_config()`
+
+> **Note:** The Critique model slot was removed — it was dead code never consumed by any runtime path.
 
 #### New function: `configure_slot_model()`
 
@@ -178,24 +178,18 @@ Tracks `collected_keys: HashMap<String, String>` to avoid re-prompting for alrea
 
 #### Config building
 
-Build `AppConfig` with all slot fields:
+Build `AppConfig` with slot fields:
 ```rust
-config.model_thinking = Some(thinking_model);
-config.model_thinking_provider = Some(thinking_provider);
-config.model_critique = Some(critique_model);
-config.model_critique_provider = Some(critique_provider);
 config.model_vlm = Some(vlm_model);
 config.model_vlm_provider = Some(vlm_provider);
-config.model_compact = Some(compact_model);
-config.model_compact_provider = Some(compact_provider);
+// Compact stored via agents map:
+config.agents.insert("compact", AgentConfigInline { model, provider, .. });
 ```
 
 #### Summary display
 
 Port `show_config_summary()` from Python. Uses `rail_summary_box` with rows:
 - Normal: {provider} / {model}
-- Thinking: (same as Normal) or {provider} / {model}
-- Critique: (same as Thinking) or {provider} / {model}
 - Vision: (same as Normal) or {provider} / {model}
 - Compact: (same as Normal) or {provider} / {model}
 - API Keys section: list env vars with ✓/set status

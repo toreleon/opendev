@@ -361,11 +361,7 @@ impl InteractiveMenu {
         if self.search_mode {
             let _ = crossterm::execute!(
                 w,
-                Print(format!(
-                    "{}/{} matched",
-                    total,
-                    self.all_items.len()
-                ))
+                Print(format!("{}/{} matched", total, self.all_items.len()))
             );
         } else {
             let _ = crossterm::execute!(w, Print("↑↓ navigate · enter select · / search"));
