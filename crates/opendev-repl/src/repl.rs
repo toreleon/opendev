@@ -54,6 +54,8 @@ pub struct ReplState {
     pub messages_cleared: bool,
     /// Flag set by /compact command; REPL loop consumes and triggers compaction.
     pub compact_requested: bool,
+    /// Prompt set by /init command; REPL loop consumes and processes it.
+    pub init_prompt: Option<String>,
 }
 
 impl Default for ReplState {
@@ -69,6 +71,7 @@ impl Default for ReplState {
             pending_plan_request: false,
             messages_cleared: false,
             compact_requested: false,
+            init_prompt: None,
         }
     }
 }
@@ -165,6 +168,11 @@ impl Repl {
                     self.state.compact_requested = false;
                     // Compaction will be driven by ContextCompactor when wired up.
                     info!("Compact flag consumed; compaction will run on next query.");
+                }
+
+                if let Some(query) = self.state.init_prompt.take() {
+                    self.state.last_prompt = query.clone();
+                    self.process_query(&query).await?;
                 }
 
                 continue;

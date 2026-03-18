@@ -82,7 +82,7 @@ impl BuiltinCommands {
                 CommandOutcome::Handled
             }
             "/init" => {
-                self.handle_init();
+                self.handle_init(args, state);
                 CommandOutcome::Handled
             }
             "/sound" => {
@@ -402,37 +402,10 @@ impl BuiltinCommands {
         println!("Playing test sound...");
     }
 
-    fn handle_init(&self) {
-        println!("Scanning codebase...");
-        match std::env::current_dir() {
-            Ok(cwd) => {
-                println!("Working directory: {}", cwd.display());
-                // Check for common project markers
-                let markers = [
-                    ("Cargo.toml", "Rust"),
-                    ("package.json", "Node.js"),
-                    ("pyproject.toml", "Python"),
-                    ("go.mod", "Go"),
-                    ("Makefile", "Make"),
-                    (".git", "Git repo"),
-                ];
-                let mut found = Vec::new();
-                for (file, label) in &markers {
-                    if cwd.join(file).exists() {
-                        found.push(*label);
-                    }
-                }
-                if found.is_empty() {
-                    println!("No recognized project markers found.");
-                } else {
-                    println!("Detected: {}", found.join(", "));
-                }
-                println!("Codebase context initialized.");
-            }
-            Err(e) => {
-                println!("Failed to read working directory: {}", e);
-            }
-        }
+    fn handle_init(&self, args: &str, state: &mut ReplState) {
+        let prompt = opendev_agents::prompts::embedded::build_init_prompt(args);
+        state.init_prompt = Some(prompt);
+        println!("Generating AGENTS.md...");
     }
 }
 

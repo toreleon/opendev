@@ -160,11 +160,16 @@ impl App {
                 }
             },
             "init" => {
-                let path = args.unwrap_or(".");
-                self.push_system_message(format!(
-                    "Analyzing codebase at '{path}' and generating AGENTS.md...\n\
-                     Send a message to the agent to perform initialization."
-                ));
+                if self.state.agent_active {
+                    self.push_system_message(
+                        "Cannot run /init while the agent is active.".to_string(),
+                    );
+                    return;
+                }
+                let prompt =
+                    opendev_agents::prompts::embedded::build_init_prompt(args.unwrap_or(""));
+                self.push_system_message("Generating AGENTS.md...".to_string());
+                let _ = self.event_tx.send(AppEvent::UserSubmit(prompt));
             }
             "agents" => match args {
                 Some("create") => {
@@ -485,7 +490,7 @@ mod tests {
                 .last()
                 .unwrap()
                 .content
-                .contains("AGENTS.md")
+                .contains("Generating AGENTS.md")
         );
     }
 

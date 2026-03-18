@@ -372,6 +372,11 @@ pub static TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::
     m
 });
 
+/// Build the `/init` prompt, substituting optional user arguments.
+pub fn build_init_prompt(args: &str) -> String {
+    SYSTEM_INIT.replace("{args}", args)
+}
+
 /// Look up an embedded template by its relative path.
 ///
 /// Returns `None` if the path is not a known embedded template.
@@ -463,6 +468,21 @@ mod tests {
     fn test_subagent_templates() {
         let templates = subagent_templates();
         assert!(templates.len() >= 4);
+    }
+
+    #[test]
+    fn test_build_init_prompt_no_args() {
+        let prompt = build_init_prompt("");
+        assert!(prompt.contains("AGENTS.md"));
+        assert!(prompt.contains("Build/lint/test"));
+        assert!(!prompt.contains("{args}"));
+    }
+
+    #[test]
+    fn test_build_init_prompt_with_args() {
+        let prompt = build_init_prompt("focus on testing");
+        assert!(prompt.contains("focus on testing"));
+        assert!(!prompt.contains("{args}"));
     }
 
     #[test]
