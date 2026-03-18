@@ -354,13 +354,6 @@ impl super::base::ProviderAdapter for OpenAiAdapter {
             responses_payload["max_output_tokens"] = tok.clone();
         }
 
-        // Temperature (strip for reasoning models)
-        if !Self::is_reasoning_model(&payload)
-            && let Some(temp) = payload.get("temperature")
-        {
-            responses_payload["temperature"] = temp.clone();
-        }
-
         // Reasoning config — always request when effort is configured.
         // Works for o-series, GPT-5+, and any future reasoning-capable models.
         // Non-reasoning models will simply not return reasoning output.
@@ -369,6 +362,12 @@ impl super::base::ProviderAdapter for OpenAiAdapter {
                 "effort": effort,
                 "summary": "auto",
             });
+            // OpenAI rejects temperature when reasoning is set
+        } else if !Self::is_reasoning_model(&payload) {
+            // Temperature (only when reasoning is NOT active)
+            if let Some(temp) = payload.get("temperature") {
+                responses_payload["temperature"] = temp.clone();
+            }
         }
 
         // Tools

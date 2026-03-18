@@ -137,11 +137,11 @@ impl App {
 
             // Reasoning events
             AppEvent::ReasoningContent(content) => {
-                // Replace previous reasoning message in this turn if present
+                // Append to previous reasoning message in this turn (streaming sends deltas)
                 if let Some(last) = self.state.messages.last_mut()
                     && last.role == DisplayRole::Reasoning
                 {
-                    last.content = content;
+                    last.content.push_str(&content);
                 } else {
                     self.state.messages.push(DisplayMessage {
                         role: DisplayRole::Reasoning,
