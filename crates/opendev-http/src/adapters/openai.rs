@@ -360,7 +360,7 @@ impl super::base::ProviderAdapter for OpenAiAdapter {
         if let Some(ref effort) = reasoning_effort {
             responses_payload["reasoning"] = json!({
                 "effort": effort,
-                "summary": "auto",
+                "summary": "detailed",
             });
             // Include encrypted reasoning content for full thinking traces.
             // Without this, OpenAI only returns brief summaries.
