@@ -1239,7 +1239,9 @@ mod tests {
         let msgs = vec![
             DisplayMessage {
                 role: DisplayRole::Reasoning,
-                content: "Let me think step by step.\nFirst analyze the problem.\nThen find a solution.".into(),
+                content:
+                    "Let me think step by step.\nFirst analyze the problem.\nThen find a solution."
+                        .into(),
                 tool_call: None,
                 collapsed: false,
             },
@@ -1288,5 +1290,4 @@ mod tests {
                 .join("\n")
         );
     }
-
 }

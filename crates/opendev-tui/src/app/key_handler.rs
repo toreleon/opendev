@@ -313,22 +313,40 @@ impl App {
             // Enter — accept autocomplete, submit message, or execute slash command
             (_, KeyCode::Enter) => {
                 if self.state.autocomplete.is_visible() {
-                    // Accept autocomplete selection
-                    if let Some((insert_text, delete_count)) = self.state.autocomplete.accept() {
-                        let start = self.state.input_cursor.saturating_sub(delete_count);
-                        self.state
-                            .input_buffer
-                            .drain(start..self.state.input_cursor);
-                        self.state.input_cursor = start;
-                        self.state
-                            .input_buffer
-                            .insert_str(self.state.input_cursor, &insert_text);
-                        self.state.input_cursor += insert_text.len();
-                        // Add trailing space
-                        self.state.input_buffer.insert(self.state.input_cursor, ' ');
-                        self.state.input_cursor += 1;
+                    // If the input is already a complete slash command (exact match),
+                    // dismiss autocomplete and submit instead of accepting the suggestion.
+                    let is_exact_slash = self.state.input_buffer.starts_with('/')
+                        && !self.state.input_buffer[1..].contains(' ')
+                        && self
+                            .state
+                            .autocomplete
+                            .items()
+                            .first()
+                            .is_some_and(|item| item.insert_text == self.state.input_buffer);
+
+                    if is_exact_slash {
+                        self.state.autocomplete.dismiss();
+                        // Fall through to submit below
+                    } else {
+                        // Accept autocomplete selection
+                        if let Some((insert_text, delete_count)) = self.state.autocomplete.accept()
+                        {
+                            let start = self.state.input_cursor.saturating_sub(delete_count);
+                            self.state
+                                .input_buffer
+                                .drain(start..self.state.input_cursor);
+                            self.state.input_cursor = start;
+                            self.state
+                                .input_buffer
+                                .insert_str(self.state.input_cursor, &insert_text);
+                            self.state.input_cursor += insert_text.len();
+                            // Add trailing space
+                            self.state.input_buffer.insert(self.state.input_cursor, ' ');
+                            self.state.input_cursor += 1;
+                        }
                     }
-                } else if !self.state.input_buffer.is_empty() {
+                }
+                if !self.state.autocomplete.is_visible() && !self.state.input_buffer.is_empty() {
                     let msg = self.state.input_buffer.clone();
                     self.state.input_buffer.clear();
                     self.state.input_cursor = 0;

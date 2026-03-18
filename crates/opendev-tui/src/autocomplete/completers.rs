@@ -63,7 +63,10 @@ impl CommandCompleter {
                 ("semi-auto", "Safe commands auto-approved"),
                 ("auto", "All commands auto-approved"),
             ],
-            "model" | "models" | "session-models" => vec![
+            // /models with no args opens the interactive picker — don't
+            // autocomplete args so Enter submits the command directly.
+            "models" => vec![],
+            "model" | "session-models" => vec![
                 ("gpt-4o", "OpenAI GPT-4o"),
                 ("gpt-4o-mini", "OpenAI GPT-4o Mini"),
                 ("claude-sonnet-4", "Anthropic Claude Sonnet 4"),

@@ -789,10 +789,10 @@ mod tests {
 
     #[test]
     fn test_reasoning_via_cached_lines_widget() {
+        use crate::widgets::conversation::ConversationWidget;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use ratatui::layout::Rect;
-        use crate::widgets::conversation::ConversationWidget;
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -825,8 +825,7 @@ mod tests {
         let msgs = app.state.messages.clone();
         terminal
             .draw(|frame| {
-                let widget = ConversationWidget::new(&msgs, 0)
-                    .cached_lines(&cached);
+                let widget = ConversationWidget::new(&msgs, 0).cached_lines(&cached);
                 frame.render_widget(widget, frame.area());
             })
             .unwrap();

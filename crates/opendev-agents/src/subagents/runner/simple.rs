@@ -500,7 +500,9 @@ impl SubagentRunner for SimpleReactRunner {
                                 Ok(d) => {
                                     if d.choice == "yes_remember" {
                                         if name == "run_command" {
-                                            let prefix = opendev_runtime::extract_command_prefix(d.command.trim());
+                                            let prefix = opendev_runtime::extract_command_prefix(
+                                                d.command.trim(),
+                                            );
                                             debug!(
                                                 prefix = %prefix,
                                                 "Auto-approving command prefix for remainder of session"

@@ -658,9 +658,7 @@ mod tests {
     #[test]
     fn test_chained_safe_commands() {
         assert!(is_safe_command("cargo fmt && cargo clippy"));
-        assert!(is_safe_command(
-            "cargo check && cargo test && cargo clippy"
-        ));
+        assert!(is_safe_command("cargo check && cargo test && cargo clippy"));
         assert!(is_safe_command("cd src; ls -la"));
     }
 
@@ -715,10 +713,7 @@ mod tests {
     #[test]
     fn test_normalize_segment_helper() {
         assert_eq!(normalize_segment("cargo test"), "cargo test");
-        assert_eq!(
-            normalize_segment("RUST_LOG=debug cargo test"),
-            "cargo test"
-        );
+        assert_eq!(normalize_segment("RUST_LOG=debug cargo test"), "cargo test");
         assert_eq!(normalize_segment("/usr/bin/git status"), "git status");
         assert_eq!(
             normalize_segment("CI=1 /usr/local/bin/cargo clippy"),

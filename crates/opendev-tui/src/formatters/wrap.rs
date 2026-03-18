@@ -32,6 +32,44 @@ fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|s| span_width(s)).sum()
 }
 
+/// Split a markdown line's spans into structural prefix (bullet/list marker)
+/// and content. Strips redundant leading whitespace from the prefix since the
+/// outer `cont_prefix` already provides base indentation.
+///
+/// Returns `(stripped_prefix_spans, content_spans, stripped_prefix_width)`.
+fn split_structural_prefix<'a>(
+    spans: &[Span<'a>],
+    strip_indent: usize,
+) -> (Vec<Span<'a>>, Vec<Span<'a>>, usize) {
+    if spans.is_empty() {
+        return (vec![], vec![], 0);
+    }
+    let first_text = spans[0].content.as_ref();
+    let trimmed = first_text.trim_start();
+
+    let is_bullet =
+        trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ");
+    let is_ordered = !is_bullet
+        && trimmed.find(". ").is_some_and(|dot_pos| {
+            dot_pos > 0 && trimmed[..dot_pos].chars().all(|c| c.is_ascii_digit())
+        });
+
+    if is_bullet || is_ordered {
+        // Strip up to `strip_indent` chars of leading whitespace
+        let leading_ws = first_text.len() - trimmed.len();
+        let strip = leading_ws.min(strip_indent);
+        let stripped_text = &first_text[strip..];
+        let stripped_span = Span::styled(stripped_text.to_string(), spans[0].style);
+        let prefix_w: usize = stripped_text
+            .chars()
+            .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+            .sum();
+        (vec![stripped_span], spans[1..].to_vec(), prefix_w)
+    } else {
+        (vec![], spans.to_vec(), 0)
+    }
+}
+
 /// Pre-wrap a sequence of markdown-rendered lines, prepending the appropriate
 /// prefix to each output line.
 ///
@@ -84,25 +122,34 @@ pub fn wrap_spans_to_lines<'a>(
             continue;
         }
 
-        // Available width for content after prefix
-        let avail = max_width.saturating_sub(prefix_w);
-        if avail == 0 {
-            let mut spans = prefix;
-            spans.extend(md_line.spans);
-            output.push(Line::from(spans));
-            continue;
-        }
+        // Split structural prefix (bullet/list marker) from content,
+        // stripping redundant leading whitespace that the outer prefix provides
+        let (struct_prefix, content_spans, struct_prefix_w) =
+            split_structural_prefix(&md_line.spans, cont_prefix_w);
 
-        // Wrap the content spans into chunks that fit within `avail`
-        let wrapped = wrap_spans(md_line.spans, avail);
+        // Available width for content after both outer prefix and structural prefix
+        let content_avail = max_width.saturating_sub(prefix_w + struct_prefix_w).max(1);
+
+        // Wrap only the content spans
+        let wrapped = if content_spans.is_empty() {
+            vec![vec![]]
+        } else {
+            wrap_spans(content_spans, content_avail)
+        };
 
         for (i, chunk) in wrapped.into_iter().enumerate() {
-            let pfx = if i == 0 {
-                prefix.clone()
+            let mut spans = if i == 0 {
+                // First visual line: outer_prefix + stripped_bullet + content
+                let mut s = prefix.clone();
+                s.extend(struct_prefix.clone());
+                s
+            } else if struct_prefix_w > 0 {
+                // Continuation of a bullet: pad to align with content start
+                vec![Span::raw(" ".repeat(cont_prefix_w + struct_prefix_w))]
             } else {
+                // No bullet: use normal continuation prefix
                 cont_prefix.clone()
             };
-            let mut spans = pfx;
             spans.extend(chunk);
             output.push(Line::from(spans));
         }
@@ -411,6 +458,107 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_bullet_indent_stripped() {
+        // Markdown renderer produces "  - " (2-space indent + dash + space).
+        // The outer cont_prefix is "  " (2 chars). The structural prefix
+        // should strip the redundant 2 leading spaces so the dash lands at col 2.
+        // Bullets come after a header line so they use cont_prefix.
+        let md_lines = vec![
+            Line::from(vec![Span::raw("Header line")]),
+            Line::from(vec![Span::raw("  - "), Span::raw("Bullet text here")]),
+        ];
+        let first = vec![Span::raw("⏺ ")];
+        let cont = vec![Span::raw("  ")];
+
+        let result = wrap_spans_to_lines(md_lines, first, cont, 80);
+        assert_eq!(result.len(), 2);
+        let text: String = result[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        // Should be "  - Bullet text here" (cont_prefix "  " + stripped "- " + content)
+        assert_eq!(text, "  - Bullet text here");
+    }
+
+    #[test]
+    fn test_bullet_wrap_alignment() {
+        // A long bullet line should wrap with continuation aligned at col 4
+        // (2 for cont_prefix + 2 for "- ").
+        let long_text = "word ".repeat(15).trim().to_string();
+        let md_lines = vec![
+            Line::from(vec![Span::raw("Header line")]),
+            Line::from(vec![Span::raw("  - "), Span::raw(long_text)]),
+        ];
+        let first = vec![Span::raw("⏺ ")];
+        let cont = vec![Span::raw("  ")];
+
+        let result = wrap_spans_to_lines(md_lines, first, cont, 40);
+        // Header + at least 2 bullet lines (first + wrap)
+        assert!(
+            result.len() >= 3,
+            "should have wrapped, got {} lines",
+            result.len()
+        );
+
+        // Second line (first bullet line): cont_prefix + "- " + content
+        let bullet_text: String = result[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            bullet_text.starts_with("  - "),
+            "bullet line should start with '  - ', got: {bullet_text}"
+        );
+
+        // Continuation lines of the bullet: 4 spaces padding (aligned with content after "- ")
+        for i in 2..result.len() {
+            let line_text: String = result[i].spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                line_text.starts_with("    "),
+                "continuation line {i} should start with 4 spaces, got: {:?}",
+                line_text
+            );
+        }
+
+        // All lines fit within max_width
+        for line in &result {
+            let w: usize = line.spans.iter().map(|s| span_width(s)).sum();
+            assert!(w <= 40, "line width {w} exceeds 40");
+        }
+    }
+
+    #[test]
+    fn test_nested_bullet_alignment() {
+        // Nested bullet: "    - " (4-space indent). After stripping 2 (cont_prefix_w),
+        // we get "  - " (2-space indent + dash). So nested dash at col 4, text at col 6.
+        let long_text = "word ".repeat(15).trim().to_string();
+        let md_lines = vec![
+            Line::from(vec![Span::raw("Header line")]),
+            Line::from(vec![Span::raw("    - "), Span::raw(long_text)]),
+        ];
+        let first = vec![Span::raw("⏺ ")];
+        let cont = vec![Span::raw("  ")];
+
+        let result = wrap_spans_to_lines(md_lines, first, cont, 40);
+        assert!(
+            result.len() >= 3,
+            "should have wrapped, got {} lines",
+            result.len()
+        );
+
+        // Second line: cont_prefix "  " + stripped "  - " = "    - " + content
+        let bullet_text: String = result[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            bullet_text.starts_with("    - "),
+            "first should start with '    - ', got: {bullet_text}"
+        );
+
+        // Continuation: 6 spaces (2 cont_prefix + 4 stripped prefix width "  - ")
+        for i in 2..result.len() {
+            let line_text: String = result[i].spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                line_text.starts_with("      "),
+                "nested continuation line {i} should start with 6 spaces, got: {:?}",
+                line_text
+            );
         }
     }
 }
