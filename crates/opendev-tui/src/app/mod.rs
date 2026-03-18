@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use crate::controllers::{
     ApprovalController, AskUserController, McpCommandController, MessageController,
-    PlanApprovalController,
+    ModelPickerController, PlanApprovalController,
 };
 use crate::event::{AppEvent, EventHandler};
 use crate::managers::BackgroundTaskManager;
@@ -74,6 +74,8 @@ pub struct App {
     user_message_tx: Option<mpsc::UnboundedSender<String>>,
     /// MCP command controller for managing MCP servers.
     mcp_controller: McpCommandController,
+    /// Model picker controller for interactive model selection.
+    model_picker_controller: Option<ModelPickerController>,
     /// Background task manager (shared with async kill tasks).
     task_manager: Arc<tokio::sync::Mutex<BackgroundTaskManager>>,
 }
@@ -103,6 +105,7 @@ impl App {
             interrupt_token: None,
             user_message_tx: None,
             mcp_controller: McpCommandController::new(vec![]),
+            model_picker_controller: None,
             task_manager: Arc::new(tokio::sync::Mutex::new(BackgroundTaskManager::default())),
         }
     }

@@ -113,6 +113,13 @@ impl App {
             self.render_approval(frame, chunks[2]);
         }
 
+        // Model picker panel (rendered over input area when active)
+        if let Some(ref picker) = self.model_picker_controller
+            && picker.active()
+        {
+            self.render_model_picker(frame, chunks[2]);
+        }
+
         // Status bar
         let status = StatusBarWidget::new(
             &self.state.model,
@@ -442,6 +449,184 @@ impl App {
             "\u{2191}/\u{2193} choose \u{00b7} Enter confirm \u{00b7} Esc cancel",
             None,
         );
+    }
+
+    /// Render the model picker panel above the input area.
+    pub(super) fn render_model_picker(&self, frame: &mut ratatui::Frame, input_area: layout::Rect) {
+        use crate::controllers::ModelPickerController;
+        use crate::formatters::style_tokens;
+        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+
+        let picker = match self.model_picker_controller {
+            Some(ref p) => p,
+            None => return,
+        };
+
+        let visible = picker.visible_models();
+        let selected_idx = picker.selected_index();
+        let total = picker.filtered_count();
+        let query = picker.search_query();
+
+        let active_bg = Color::Rgb(31, 45, 58);
+        let mut lines: Vec<Line> = Vec::new();
+
+        // Search bar
+        let search_display = if query.is_empty() {
+            "Type to search...".to_string()
+        } else {
+            query.to_string()
+        };
+        let search_style = if query.is_empty() {
+            Style::default().fg(style_tokens::DIM_GREY)
+        } else {
+            Style::default()
+                .fg(Self::PANEL_CYAN)
+                .add_modifier(Modifier::BOLD)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  \u{1f50d} ", Style::default().fg(style_tokens::DIM_GREY)),
+            Span::styled(search_display, search_style),
+        ]));
+
+        // Separator
+        lines.push(Line::from(Span::styled(
+            "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+            Style::default().fg(style_tokens::BORDER),
+        )));
+
+        // Track current provider for group headers
+        let mut current_provider = String::new();
+
+        for (display_idx, model) in &visible {
+            // Provider group header
+            if model.provider != current_provider {
+                current_provider = model.provider.clone();
+                lines.push(Line::from(Span::styled(
+                    format!("  {} {}", "\u{25cf}", model.provider_display),
+                    Style::default()
+                        .fg(style_tokens::GREY)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+
+            let selected = *display_idx == selected_idx;
+            let is_current = model.id == self.state.model;
+
+            // Pointer
+            let pointer = if selected { "\u{25b8}" } else { " " };
+            let pointer_style = if selected {
+                Style::default()
+                    .fg(Self::PANEL_CYAN)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(style_tokens::DIM_GREY)
+            };
+
+            // Model name
+            let name_style = if selected {
+                Style::default()
+                    .fg(Self::PANEL_CYAN)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_current {
+                Style::default()
+                    .fg(Color::Rgb(0, 200, 100))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(style_tokens::PRIMARY)
+            };
+
+            // Context and pricing info
+            let ctx = ModelPickerController::format_context(model.context_length);
+            let pricing =
+                ModelPickerController::format_pricing(model.pricing_input, model.pricing_output);
+
+            let mut spans = vec![
+                Span::styled(format!("    {pointer} "), pointer_style),
+                Span::styled(model.name.clone(), name_style),
+            ];
+
+            // Current model indicator
+            if is_current {
+                spans.push(Span::styled(
+                    " \u{2713}",
+                    Style::default().fg(Color::Rgb(0, 200, 100)),
+                ));
+            }
+
+            // Recommended badge
+            if model.recommended {
+                spans.push(Span::styled(
+                    " \u{2605}",
+                    Style::default().fg(Color::Rgb(255, 200, 50)),
+                ));
+            }
+
+            // Context length
+            spans.push(Span::styled(
+                format!("  {ctx}"),
+                Style::default().fg(style_tokens::DIM_GREY),
+            ));
+
+            // Pricing
+            spans.push(Span::styled(
+                format!("  {pricing}"),
+                Style::default().fg(style_tokens::SUBTLE),
+            ));
+
+            let line = Line::from(spans);
+            if selected {
+                lines.push(line.style(Style::default().bg(active_bg)));
+            } else {
+                lines.push(line);
+            }
+        }
+
+        // Empty state
+        if visible.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    No models match your search.",
+                Style::default().fg(style_tokens::DIM_GREY),
+            )));
+        }
+
+        // Bottom hint with count
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {total} model{}", if total == 1 { "" } else { "s" }),
+                Style::default().fg(style_tokens::DIM_GREY),
+            ),
+            Span::styled(
+                "  \u{2191}/\u{2193} navigate \u{00b7} Enter select \u{00b7} Esc cancel",
+                Style::default().fg(style_tokens::DIM_GREY),
+            ),
+        ]));
+
+        let panel_height = (lines.len() as u16 + 2).min(input_area.y);
+        let panel_width = input_area.width.min(80);
+        let popup_area = layout::Rect {
+            x: input_area.x,
+            y: input_area.y.saturating_sub(panel_height),
+            width: panel_width,
+            height: panel_height,
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Self::PANEL_CYAN))
+            .title(Span::styled(
+                " Models ",
+                Style::default()
+                    .fg(Self::PANEL_CYAN)
+                    .add_modifier(Modifier::BOLD),
+            ));
+
+        let paragraph = Paragraph::new(lines).block(block);
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+        frame.render_widget(paragraph, popup_area);
     }
 
     /// Render the tool approval prompt panel.

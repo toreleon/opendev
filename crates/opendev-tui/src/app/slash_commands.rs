@@ -74,33 +74,58 @@ impl App {
                 }
                 self.push_system_message(format!("Autonomy: {}", self.state.autonomy));
             }
-            "models" | "session-models" => {
-                let scope = if name == "session-models" {
-                    "session"
-                } else {
-                    "global"
-                };
+            "models" => {
                 match args {
-                    Some("clear") if name == "session-models" => {
-                        self.push_system_message(
-                            "Session model override cleared. Using global model.".to_string(),
-                        );
-                    }
                     Some(model_name) => {
+                        // Direct model set: /models <name>
                         self.state.model = model_name.to_string();
-                        self.push_system_message(format!(
-                            "Model set to: {} ({scope})",
-                            self.state.model
-                        ));
+                        self.push_system_message(format!("Model set to: {}", self.state.model));
+                        // Propagate to backend
+                        if let Some(ref tx) = self.user_message_tx {
+                            let _ = tx.send(format!("\x00__MODEL_CHANGE__{}", self.state.model));
+                        }
                     }
                     None => {
-                        self.push_system_message(format!(
-                            "Current model: {}\nUsage: /{name} <model-name>",
-                            self.state.model
-                        ));
+                        // Open interactive model picker
+                        let cache_dir = opendev_config::Paths::new(None).global_cache_dir();
+                        let picker = crate::controllers::ModelPickerController::from_registry(
+                            &cache_dir,
+                            &self.state.model,
+                        );
+                        if picker.filtered_count() == 0 {
+                            self.push_system_message(
+                                "No models available. Run `opendev setup` to configure providers."
+                                    .to_string(),
+                            );
+                        } else {
+                            self.model_picker_controller = Some(picker);
+                        }
                     }
                 }
             }
+            "session-models" => match args {
+                Some("clear") => {
+                    self.push_system_message(
+                        "Session model override cleared. Using global model.".to_string(),
+                    );
+                }
+                Some(model_name) => {
+                    self.state.model = model_name.to_string();
+                    self.push_system_message(format!(
+                        "Model set to: {} (session)",
+                        self.state.model
+                    ));
+                    if let Some(ref tx) = self.user_message_tx {
+                        let _ = tx.send(format!("\x00__MODEL_CHANGE__{}", self.state.model));
+                    }
+                }
+                None => {
+                    self.push_system_message(format!(
+                        "Current model: {}\nUsage: /session-models <model-name>",
+                        self.state.model
+                    ));
+                }
+            },
             "mcp" => {
                 let result = self.mcp_controller.handle_command(args.unwrap_or(""));
                 self.push_system_message(result);
@@ -306,7 +331,7 @@ impl App {
                         "  /clear             — Clear conversation",
                         "  /mode [plan|normal]      — Toggle or set mode",
                         "  /autonomy [manual|semi-auto|auto] — Cycle or set autonomy",
-                        "  /models [name]     — Show or set model (global)",
+                        "  /models [name]     — Open model picker or set model directly",
                         "  /session-models [name|clear] — Set model for session",
                         "  /mcp [list|add|remove|enable|disable] — Manage MCP servers",
                         "  /tasks             — List background tasks",
@@ -410,16 +435,20 @@ mod tests {
     }
 
     #[test]
-    fn test_slash_models_show_current() {
+    fn test_slash_models_opens_picker_or_shows_message() {
         let mut app = App::new();
         app.execute_slash_command("/models");
+        // Either opens the model picker popup or shows "No models available" message
+        // (depends on whether cache exists in test environment)
+        let has_picker = app.model_picker_controller.is_some();
+        let has_message = app
+            .state
+            .messages
+            .last()
+            .is_some_and(|m| m.content.contains("No models"));
         assert!(
-            app.state
-                .messages
-                .last()
-                .unwrap()
-                .content
-                .contains("claude-sonnet-4")
+            has_picker || has_message,
+            "Expected model picker or 'No models' message"
         );
     }
 

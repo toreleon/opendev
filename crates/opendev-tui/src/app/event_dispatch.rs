@@ -4,7 +4,8 @@ use crate::event::AppEvent;
 use crate::widgets::{TodoDisplayItem, TodoDisplayStatus};
 
 use super::{
-    App, DisplayMessage, DisplayRole, DisplayToolCall, OperationMode, ToolExecution, ToolState,
+    App, AutonomyLevel, DisplayMessage, DisplayRole, DisplayToolCall, OperationMode, ToolExecution,
+    ToolState,
 };
 
 impl App {
@@ -440,8 +441,23 @@ impl App {
                 working_dir,
                 response_tx,
             } => {
-                let _rx = self.approval_controller.start(command, working_dir);
-                self.approval_response_tx = Some(response_tx);
+                // Check autonomy level to decide whether to auto-approve.
+                let auto_approve = match self.state.autonomy {
+                    AutonomyLevel::Auto => true,
+                    AutonomyLevel::SemiAuto => opendev_runtime::is_safe_command(&command),
+                    AutonomyLevel::Manual => false,
+                };
+
+                if auto_approve {
+                    let _ = response_tx.send(opendev_runtime::ToolApprovalDecision {
+                        approved: true,
+                        choice: "yes".to_string(),
+                        command,
+                    });
+                } else {
+                    let _rx = self.approval_controller.start(command, working_dir);
+                    self.approval_response_tx = Some(response_tx);
+                }
                 self.state.dirty = true;
             }
             AppEvent::AskUserRequested {

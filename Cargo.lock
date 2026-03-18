@@ -2288,6 +2288,7 @@ dependencies = [
  "futures",
  "ignore",
  "opendev-agents",
+ "opendev-config",
  "opendev-models",
  "opendev-runtime",
  "opendev-tools-core",

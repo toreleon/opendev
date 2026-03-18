@@ -38,6 +38,39 @@ impl App {
             return;
         }
 
+        // Delegate to model picker controller when active
+        if let Some(ref mut picker) = self.model_picker_controller
+            && picker.active()
+        {
+            match key.code {
+                KeyCode::Up => picker.prev(),
+                KeyCode::Down => picker.next(),
+                KeyCode::Enter => {
+                    if let Some(selected) = picker.select() {
+                        self.state.model = selected.id.clone();
+                        self.push_system_message(format!(
+                            "Model switched to: {} ({})",
+                            selected.name, selected.provider_display
+                        ));
+                        // Propagate to backend
+                        if let Some(ref tx) = self.user_message_tx {
+                            let _ = tx.send(format!("\x00__MODEL_CHANGE__{}", self.state.model));
+                        }
+                    }
+                    self.model_picker_controller = None;
+                }
+                KeyCode::Esc => {
+                    picker.cancel();
+                    self.model_picker_controller = None;
+                }
+                KeyCode::Backspace => picker.search_pop(),
+                KeyCode::Char(c) => picker.search_push(c),
+                _ => {}
+            }
+            self.state.dirty = true;
+            return;
+        }
+
         // Delegate to ask-user controller when active
         if self.ask_user_controller.active() {
             match key.code {
@@ -102,13 +135,38 @@ impl App {
                 KeyCode::Up => self.approval_controller.move_selection(-1),
                 KeyCode::Down => self.approval_controller.move_selection(1),
                 KeyCode::Enter => {
+                    // Capture selected option before confirm() clears state
+                    let idx = self.approval_controller.selected_index();
+                    let option = self.approval_controller.options()[idx].clone();
+                    let command = self.approval_controller.command().to_string();
                     self.approval_controller.confirm();
-                    // confirm() already sent via the controller's internal oneshot.
-                    self.approval_response_tx.take();
+                    // Forward decision back to the react loop
+                    if let Some(tx) = self.approval_response_tx.take() {
+                        let choice = if option.choice == "2" {
+                            "yes_remember".to_string()
+                        } else if option.approved {
+                            "yes".to_string()
+                        } else {
+                            "no".to_string()
+                        };
+                        let _ = tx.send(opendev_runtime::ToolApprovalDecision {
+                            approved: option.approved,
+                            choice,
+                            command,
+                        });
+                    }
                 }
                 KeyCode::Esc => {
+                    let command = self.approval_controller.command().to_string();
                     self.approval_controller.cancel();
-                    self.approval_response_tx.take();
+                    // Send denial back to the react loop
+                    if let Some(tx) = self.approval_response_tx.take() {
+                        let _ = tx.send(opendev_runtime::ToolApprovalDecision {
+                            approved: false,
+                            choice: "no".to_string(),
+                            command,
+                        });
+                    }
                     let _ = self.event_tx.send(AppEvent::Interrupt);
                 }
                 _ => {}

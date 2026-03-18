@@ -259,6 +259,13 @@ impl TuiRunner {
                     continue;
                 }
 
+                // Handle model change sentinel
+                if let Some(model) = msg.strip_prefix("\x00__MODEL_CHANGE__") {
+                    info!(model = model, "Model changed via /models");
+                    runtime.llm_caller.config.model = model.to_string();
+                    continue;
+                }
+
                 // Handle manual compaction sentinel
                 if msg == "\x00__COMPACT__" {
                     info!("TUI: manual compaction requested");
