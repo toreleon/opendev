@@ -270,30 +270,46 @@ impl App {
                 }
             }
             DisplayRole::Reasoning => {
-                for (i, content_line) in content.lines().enumerate() {
-                    if i == 0 {
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("{} ", style_tokens::THINKING_ICON),
-                                Style::default().fg(style_tokens::THINKING_BG),
-                            ),
-                            Span::styled(
-                                content_line.to_string(),
-                                Style::default()
-                                    .fg(style_tokens::THINKING_BG)
-                                    .add_modifier(Modifier::ITALIC),
-                            ),
-                        ]));
+                let cache_key = markdown_cache_key(&msg.role, &content);
+                let md_lines = if let Some(cached) = markdown_cache.get(&cache_key) {
+                    cached.clone()
+                } else {
+                    let rendered =
+                        MarkdownRenderer::render_muted(&content, style_tokens::THINKING_BG);
+                    markdown_cache.insert(cache_key, rendered.clone());
+                    rendered
+                };
+                let mut leading_consumed = false;
+                for md_line in md_lines {
+                    let line_text: String = md_line
+                        .spans
+                        .iter()
+                        .map(|s| s.content.to_string())
+                        .collect();
+                    let has_content = !line_text.trim().is_empty();
+
+                    if !leading_consumed && has_content {
+                        let mut spans = vec![Span::styled(
+                            format!("{} ", style_tokens::THINKING_ICON),
+                            Style::default().fg(style_tokens::THINKING_BG),
+                        )];
+                        spans.extend(
+                            md_line
+                                .spans
+                                .into_iter()
+                                .map(|s| Span::styled(s.content.to_string(), s.style)),
+                        );
+                        lines.push(Line::from(spans));
+                        leading_consumed = true;
                     } else {
-                        lines.push(Line::from(vec![
-                            Span::raw(Indent::CONT),
-                            Span::styled(
-                                content_line.to_string(),
-                                Style::default()
-                                    .fg(style_tokens::THINKING_BG)
-                                    .add_modifier(Modifier::ITALIC),
-                            ),
-                        ]));
+                        let mut spans = vec![Span::raw(Indent::CONT)];
+                        spans.extend(
+                            md_line
+                                .spans
+                                .into_iter()
+                                .map(|s| Span::styled(s.content.to_string(), s.style)),
+                        );
+                        lines.push(Line::from(spans));
                     }
                 }
             }

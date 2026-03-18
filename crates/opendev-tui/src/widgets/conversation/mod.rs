@@ -20,7 +20,7 @@ use std::borrow::Cow;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{
         Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget, Wrap,
@@ -200,30 +200,29 @@ impl<'a> ConversationWidget<'a> {
                     Self::render_simple_role(&content, &rs, &mut lines);
                 }
                 DisplayRole::Reasoning => {
-                    for (i, content_line) in content.lines().enumerate() {
-                        if i == 0 {
-                            lines.push(Line::from(vec![
-                                Span::styled(
-                                    format!("{} ", style_tokens::THINKING_ICON),
-                                    Style::default().fg(style_tokens::THINKING_BG),
-                                ),
-                                Span::styled(
-                                    content_line.to_string(),
-                                    Style::default()
-                                        .fg(style_tokens::THINKING_BG)
-                                        .add_modifier(Modifier::ITALIC),
-                                ),
-                            ]));
+                    let md_lines =
+                        MarkdownRenderer::render_muted(&content, style_tokens::THINKING_BG);
+                    let mut leading_consumed = false;
+                    for md_line in md_lines.into_iter() {
+                        let line_text: String = md_line
+                            .spans
+                            .iter()
+                            .map(|s| s.content.to_string())
+                            .collect();
+                        let has_content = !line_text.trim().is_empty();
+
+                        if !leading_consumed && has_content {
+                            let mut spans = vec![Span::styled(
+                                format!("{} ", style_tokens::THINKING_ICON),
+                                Style::default().fg(style_tokens::THINKING_BG),
+                            )];
+                            spans.extend(md_line.spans);
+                            lines.push(Line::from(spans));
+                            leading_consumed = true;
                         } else {
-                            lines.push(Line::from(vec![
-                                Span::raw(Indent::CONT),
-                                Span::styled(
-                                    content_line.to_string(),
-                                    Style::default()
-                                        .fg(style_tokens::THINKING_BG)
-                                        .add_modifier(Modifier::ITALIC),
-                                ),
-                            ]));
+                            let mut spans = vec![Span::raw(Indent::CONT)];
+                            spans.extend(md_line.spans);
+                            lines.push(Line::from(spans));
                         }
                     }
                 }
