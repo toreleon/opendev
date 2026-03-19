@@ -573,6 +573,30 @@ fn format_parts_inner(
         return ("Search".to_string(), pattern_display);
     }
 
+    // Unknown tools: derive pretty display name from tool_name itself
+    // e.g. "some_fancy_tool" → "Some Fancy Tool", "git" → "Git"
+    // Must be before generic arg extraction so we use the pretty name, not "Call"
+    if entry.verb == "Call" {
+        let pretty_name = tool_name
+            .replace('_', " ")
+            .split_whitespace()
+            .map(|w| {
+                let mut c = w.chars();
+                match c.next() {
+                    Some(ch) => format!("{}{}", ch.to_uppercase(), c.as_str()),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if let Some(arg) = extract_arg_from_keys(entry.primary_arg_keys, args) {
+            return (pretty_name, arg);
+        }
+
+        return (pretty_name, String::new());
+    }
+
     // Try to extract a meaningful summary from args
     if let Some(summary) = extract_arg_from_keys(entry.primary_arg_keys, args) {
         // Strip working dir prefix from file path args
@@ -594,29 +618,6 @@ fn format_parts_inner(
         if parts.len() == 3 {
             return ("MCP".to_string(), format!("{}/{}", parts[1], parts[2]));
         }
-    }
-
-    // Fallback for unknown tools: derive display from tool_name itself
-    // e.g. "batch_tool" → "Batch Tool", "web_fetch" → "Web Fetch"
-    if entry.verb == "Call" {
-        let pretty_name = tool_name
-            .replace('_', " ")
-            .split_whitespace()
-            .map(|w| {
-                let mut c = w.chars();
-                match c.next() {
-                    Some(ch) => format!("{}{}", ch.to_uppercase(), c.as_str()),
-                    None => String::new(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        if let Some(arg) = extract_arg_from_keys(entry.primary_arg_keys, args) {
-            return (pretty_name, arg);
-        }
-
-        return (pretty_name, String::new());
     }
 
     // Known tool with no arg extracted: verb(label)
