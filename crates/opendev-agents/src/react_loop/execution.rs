@@ -459,8 +459,11 @@ impl ReactLoop {
                         continue;
                     }
 
-                    // Accept completion
-                    if let Some(cb) = event_callback {
+                    // Accept completion — only emit the chunk if we didn't
+                    // already stream it via TextDelta callbacks.
+                    if !streaming
+                        && let Some(cb) = event_callback
+                    {
                         cb.on_agent_chunk(&content);
                     }
                     iter_metrics.total_duration_ms = iter_start.elapsed().as_millis() as u64;
