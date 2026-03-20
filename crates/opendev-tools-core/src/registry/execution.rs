@@ -44,6 +44,9 @@ impl ToolRegistry {
     fn resolve_tool(&self, name: &str) -> Option<(Arc<dyn BaseTool>, String)> {
         let tools = self.tools.read().expect("ToolRegistry lock poisoned");
 
+        // Strip "functions." prefix (OpenAI function-calling artifact)
+        let name = name.strip_prefix("functions.").unwrap_or(name);
+
         // Exact match (fast path)
         if let Some(t) = tools.get(name) {
             return Some((Arc::clone(t), name.to_string()));
@@ -119,9 +122,12 @@ impl ToolRegistry {
         let normalized = normalizer::normalize_params(tool_name, args, Some(&working_dir));
         debug!(tool = %tool_name, params = ?normalized, "Normalized tool params");
 
-        // Deduplication: check cache
+        // Deduplication: check cache (skip for tools that must always run)
+        const NO_DEDUP: &[&str] = &["spawn_subagent"];
+        let skip_dedup = NO_DEDUP.contains(&tool_name.as_str());
         let dedup_key = make_dedup_key(tool_name, &normalized);
-        if let Ok(cache) = self.dedup_cache.lock()
+        if !skip_dedup
+            && let Ok(cache) = self.dedup_cache.lock()
             && let Some(cached) = cache.get(&dedup_key)
         {
             info!(tool = %tool_name, "Returning cached result (dedup)");
@@ -203,7 +209,9 @@ impl ToolRegistry {
         }
 
         // Cache result for dedup
-        if let Ok(mut cache) = self.dedup_cache.lock() {
+        if !skip_dedup
+            && let Ok(mut cache) = self.dedup_cache.lock()
+        {
             cache.insert(dedup_key, result.clone());
         }
 

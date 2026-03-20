@@ -102,6 +102,7 @@ impl ToolRegistry {
     /// Check if a tool is registered.
     pub fn contains(&self, name: &str) -> bool {
         let tools = self.tools.read().expect("ToolRegistry lock poisoned");
+        let name = name.strip_prefix("functions.").unwrap_or(name);
         tools.contains_key(name)
     }
 
@@ -789,6 +790,33 @@ mod tests {
         let reg = ToolRegistry::new();
         let debug = format!("{reg:?}");
         assert!(debug.contains("ToolRegistry"));
+    }
+
+    #[test]
+    fn test_contains_strips_functions_prefix() {
+        let reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoTool));
+        assert!(reg.contains("functions.echo"));
+        assert!(reg.contains("echo"));
+        assert!(!reg.contains("functions.nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_strips_functions_prefix() {
+        let reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoTool));
+
+        let mut args = HashMap::new();
+        args.insert("message".into(), serde_json::json!("hello"));
+
+        let ctx = ToolContext::new("/tmp/test");
+        let result = reg.execute("functions.echo", args, &ctx).await;
+        assert!(
+            result.success,
+            "functions. prefix should be stripped: {:?}",
+            result.error
+        );
+        assert_eq!(result.output.as_deref(), Some("Echo: hello"));
     }
 
     // --- Fuzzy tool name resolution tests ---
