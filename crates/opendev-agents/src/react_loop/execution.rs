@@ -45,10 +45,7 @@ struct IterationEmitter<'a> {
 }
 
 impl<'a> IterationEmitter<'a> {
-    fn new(
-        cb: Option<&'a dyn crate::traits::AgentEventCallback>,
-        suppress_content: bool,
-    ) -> Self {
+    fn new(cb: Option<&'a dyn crate::traits::AgentEventCallback>, suppress_content: bool) -> Self {
         Self {
             cb,
             suppress_content,
@@ -562,7 +559,9 @@ impl ReactLoop {
                     }
 
                     // Implicit completion nudge — verify original task before finishing
+                    // Skip on first iteration: text-only response = conversational reply
                     if !completion_nudge_sent
+                        && iteration > 0
                         && let Some(task) = self.config.original_task.as_deref()
                     {
                         completion_nudge_sent = true;
@@ -642,7 +641,7 @@ impl ReactLoop {
 
                     // Execute tool calls
                     // Detect if all calls are spawn_subagent — run them in parallel
-                    let all_subagents = tool_calls.len() > 1
+                    let all_subagents = !tool_calls.is_empty()
                         && tool_calls.iter().all(|tc| {
                             tc.get("function")
                                 .and_then(|f| f.get("name"))
@@ -721,8 +720,25 @@ impl ReactLoop {
                                 tokio::select! {
                                     results = futures::future::join_all(futures) => results,
                                     _ = ct.cancelled() => {
-                                        // Cancelled — emit stub results for all tool calls
-                                        // so message history stays valid
+                                        // Check background FIRST — before emitting any interruption events to TUI
+                                        if task_monitor.is_some_and(|m| m.is_background_requested()) {
+                                            info!(iteration, "Background requested during parallel tools — yielding");
+                                            // Push stub results to keep message history valid, but don't emit to TUI
+                                            for tc in &tool_calls {
+                                                let tc_id = tc.get("id").and_then(|id| id.as_str()).unwrap_or("unknown");
+                                                let t_name = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()).unwrap_or("unknown");
+                                                messages.push(serde_json::json!({
+                                                    "role": "tool",
+                                                    "tool_call_id": tc_id,
+                                                    "name": t_name,
+                                                    "content": "[Moved to background]",
+                                                }));
+                                            }
+                                            iter_metrics.total_duration_ms = iter_start.elapsed().as_millis() as u64;
+                                            self.push_metrics(iter_metrics);
+                                            return Ok(AgentResult::backgrounded(messages.clone()));
+                                        }
+                                        // Regular interrupt — emit results to TUI
                                         for tc in &tool_calls {
                                             let tc_id = tc.get("id").and_then(|id| id.as_str()).unwrap_or("unknown");
                                             let t_name = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()).unwrap_or("unknown");
@@ -735,12 +751,6 @@ impl ReactLoop {
                                                 "content": "Interrupted by user",
                                             }));
                                         }
-                                        if task_monitor.is_some_and(|m| m.is_background_requested()) {
-                                            info!(iteration, "Background requested during parallel tools — yielding");
-                                            iter_metrics.total_duration_ms = iter_start.elapsed().as_millis() as u64;
-                                            self.push_metrics(iter_metrics);
-                                            return Ok(AgentResult::backgrounded(messages.clone()));
-                                        }
                                         iter_metrics.total_duration_ms = iter_start.elapsed().as_millis() as u64;
                                         self.push_metrics(iter_metrics);
                                         return Ok(AgentResult::interrupted(messages.clone()));
@@ -751,6 +761,7 @@ impl ReactLoop {
                         };
 
                         let mut _any_tool_failed = false;
+
                         for (tc_id, t_name, tool_result) in results {
                             {
                                 let output_str = if tool_result.success {
@@ -761,7 +772,12 @@ impl ReactLoop {
                                         .as_deref()
                                         .unwrap_or("Tool execution failed")
                                 };
-                                emitter.emit_tool_result(&tc_id, &t_name, output_str, tool_result.success);
+                                emitter.emit_tool_result(
+                                    &tc_id,
+                                    &t_name,
+                                    output_str,
+                                    tool_result.success,
+                                );
                                 emitter.emit_tool_finished(&tc_id, tool_result.success);
                             }
 
@@ -1204,6 +1220,18 @@ impl ReactLoop {
                                 output_str,
                                 tool_result.success,
                             );
+                        } else if task_monitor.is_some_and(|m| m.is_background_requested()) {
+                            // Background request — don't emit tool_finished with failure.
+                            // Push stub result to messages and return backgrounded immediately.
+                            messages.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id_str,
+                                "name": tool_name,
+                                "content": "[Moved to background]",
+                            }));
+                            iter_metrics.total_duration_ms = iter_start.elapsed().as_millis() as u64;
+                            self.push_metrics(iter_metrics);
+                            return Ok(AgentResult::backgrounded(messages.clone()));
                         }
                         emitter.emit_tool_finished(tool_call_id_str, tool_result.success);
 
