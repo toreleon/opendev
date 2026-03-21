@@ -18,7 +18,7 @@ use crate::formatters::style_tokens;
 use crate::formatters::tool_registry::format_tool_call_parts_short;
 use crate::managers::BackgroundAgentManager;
 use crate::widgets::nested_tool::SubagentDisplayState;
-use crate::widgets::spinner::{FAILURE_CHAR, SPINNER_FRAMES, SUCCESS_CHAR};
+use crate::widgets::spinner::{COMPLETED_CHAR, FAILURE_CHAR, SPINNER_FRAMES, SUCCESS_CHAR};
 
 /// Minimum cell width in the grid.
 const MIN_W: u16 = 30;
@@ -99,12 +99,21 @@ impl<'a> TaskWatcherPanel<'a> {
     }
 }
 
+/// A single activity line with split icon / verb / args styling.
+/// Matches the foreground agent style: colored icon, bold verb, subtle args.
+struct ActivityLine {
+    icon: String,
+    icon_color: ratatui::style::Color,
+    verb: String,
+    args: String,
+}
+
 /// Data needed to render a single cell.
 struct TaskCellData {
     title: String,
     icon: String,
     icon_color: ratatui::style::Color,
-    activity: Vec<String>,
+    activity: Vec<ActivityLine>,
     footer: String,
     footer_color: ratatui::style::Color,
     is_focused: bool,
@@ -271,16 +280,17 @@ fn cell_rect(col: usize, row: usize, inner: Rect, cols: usize, rows: usize) -> R
 
 /// Render a single cell in the grid.
 fn render_cell(data: &TaskCellData, area: Rect, buf: &mut Buffer) {
-    let border_color = if data.is_focused {
-        style_tokens::ACCENT
+    let (border_color, border_type) = if data.is_focused {
+        (style_tokens::ACCENT, BorderType::Double)
     } else if !data.is_running {
         if data.footer_color == style_tokens::ERROR {
-            style_tokens::ERROR
+            (style_tokens::ERROR, BorderType::Plain)
         } else {
-            style_tokens::BORDER_ACCENT
+            // Completed cells get a subtle green-tinted border
+            (style_tokens::SUCCESS, BorderType::Plain)
         }
     } else {
-        style_tokens::BORDER
+        (style_tokens::DIM_GREY, BorderType::Plain)
     };
 
     let title_mod = if data.is_focused {
@@ -291,7 +301,7 @@ fn render_cell(data: &TaskCellData, area: Rect, buf: &mut Buffer) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Line::from(vec![
             Span::styled(
@@ -317,15 +327,24 @@ fn render_cell(data: &TaskCellData, area: Rect, buf: &mut Buffer) {
     let content_area = block.inner(area);
     block.render(area, buf);
 
-    if content_area.height == 0 || content_area.width == 0 {
+    if content_area.height == 0 || content_area.width < 3 {
         return;
     }
 
-    // Build display lines, flattening embedded newlines
-    let lines: Vec<String> = data.activity.iter().map(|s| s.replace('\n', " ")).collect();
+    // 1-char padding on left/right for breathing room
+    let padded = Rect::new(
+        content_area.x + 1,
+        content_area.y,
+        content_area.width.saturating_sub(2),
+        content_area.height,
+    );
 
-    let visible_h = content_area.height as usize;
-    let total_lines = lines.len();
+    if padded.width == 0 {
+        return;
+    }
+
+    let visible_h = padded.height as usize;
+    let total_lines = data.activity.len();
 
     // Compute visible window (default: auto-scroll to bottom, scroll_offset scrolls up)
     let scroll_up = data
@@ -338,44 +357,115 @@ fn render_cell(data: &TaskCellData, area: Rect, buf: &mut Buffer) {
     let (render_start_y, render_count) = if start > 0 {
         let indicator = format!("\u{2191} {} more", start);
         buf.set_string(
-            content_area.x,
-            content_area.y,
-            truncate_str(&indicator, content_area.width as usize),
+            padded.x,
+            padded.y,
+            truncate_str(&indicator, padded.width as usize),
             Style::default()
                 .fg(style_tokens::SUBTLE)
                 .add_modifier(Modifier::ITALIC),
         );
-        (content_area.y + 1, visible_h.saturating_sub(1))
+        (padded.y + 1, visible_h.saturating_sub(1))
     } else {
-        (content_area.y, visible_h)
+        (padded.y, visible_h)
     };
 
-    // Render visible activity lines
-    for (i, line) in lines[start..end].iter().take(render_count).enumerate() {
-        let truncated = truncate_str(line, content_area.width as usize);
-        let color = line_color(line);
-        buf.set_string(
-            content_area.x,
-            render_start_y + i as u16,
-            &truncated,
-            Style::default().fg(color),
-        );
+    // Render visible activity lines: colored icon + bold verb + subtle args
+    for (i, line) in data.activity[start..end]
+        .iter()
+        .take(render_count)
+        .enumerate()
+    {
+        let y = render_start_y + i as u16;
+        let max_w = padded.width as usize;
+        let mut x = padded.x;
+        let mut remaining = max_w;
+
+        // 1) Icon segment (colored)
+        let icon = line.icon.replace('\n', " ");
+        let icon_w = icon.len().min(remaining);
+        if icon_w > 0 {
+            buf.set_string(x, y, &icon[..icon_w], Style::default().fg(line.icon_color));
+            x += icon_w as u16;
+            remaining -= icon_w;
+        }
+
+        // 2) Verb segment (bold PRIMARY)
+        let verb = line.verb.replace('\n', " ");
+        let verb_w = verb.len().min(remaining);
+        if verb_w > 0 {
+            buf.set_string(
+                x,
+                y,
+                &verb[..verb_w],
+                Style::default()
+                    .fg(style_tokens::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            );
+            x += verb_w as u16;
+            remaining -= verb_w;
+        }
+
+        // 3) Args segment (subtle grey)
+        if remaining > 0 && !line.args.is_empty() {
+            let args = line.args.replace('\n', " ");
+            let args_display = format!(" {args}");
+            let args_truncated = truncate_str(&args_display, remaining);
+            buf.set_string(x, y, &args_truncated, Style::default().fg(style_tokens::SUBTLE));
+        }
     }
 }
 
-/// Determine line color by leading character.
-fn line_color(line: &str) -> ratatui::style::Color {
+/// Parse a plain-text activity line into a structured `ActivityLine`.
+/// Used for bg_agent activity logs which arrive as plain strings.
+fn parse_activity_line(line: &str) -> ActivityLine {
     let trimmed = line.trim_start();
-    if trimmed.starts_with('\u{25b8}') {
-        style_tokens::BLUE_BRIGHT
-    } else if trimmed.starts_with('\u{2713}') || trimmed.contains('\u{2713}') {
-        style_tokens::SUCCESS
-    } else if trimmed.starts_with('\u{2717}') || trimmed.contains('\u{2717}') {
-        style_tokens::ERROR
+
+    // Extract icon character and determine color
+    let (icon_str, icon_color, rest) = if trimmed.starts_with('\u{25b8}') {
+        // Running: ▸ ⠙ verb(arg) 3s — grab ▸ + spinner char
+        let after = trimmed.trim_start_matches('\u{25b8}').trim_start();
+        let icon_end = after.find(' ').unwrap_or(after.len());
+        let spinner_part = &after[..icon_end];
+        let text_part = after[icon_end..].trim_start();
+        (
+            format!("{spinner_part} "),
+            style_tokens::BLUE_BRIGHT,
+            text_part,
+        )
+    } else if trimmed.starts_with(SUCCESS_CHAR) || trimmed.starts_with(COMPLETED_CHAR) {
+        let ch = trimmed.chars().next().unwrap();
+        let rest = trimmed[ch.len_utf8()..].trim_start();
+        (
+            format!("{COMPLETED_CHAR} "),
+            style_tokens::GREEN_BRIGHT,
+            rest,
+        )
+    } else if trimmed.starts_with(FAILURE_CHAR) {
+        let rest = trimmed[FAILURE_CHAR.len_utf8()..].trim_start();
+        (format!("{COMPLETED_CHAR} "), style_tokens::ERROR, rest)
     } else if trimmed.starts_with('\u{27e1}') {
-        style_tokens::SUBTLE
+        let rest = trimmed['\u{27e1}'.len_utf8()..].trim_start();
+        (format!("{COMPLETED_CHAR} "), style_tokens::SUBTLE, rest)
     } else {
-        style_tokens::PRIMARY
+        return ActivityLine {
+            icon: String::new(),
+            icon_color: style_tokens::PRIMARY,
+            verb: String::new(),
+            args: trimmed.to_string(),
+        };
+    };
+
+    // Split rest into verb (first word) and args (remainder)
+    let (verb, args) = match rest.find(['(', ' ']) {
+        Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
+        None => (rest.to_string(), String::new()),
+    };
+
+    ActivityLine {
+        icon: icon_str,
+        icon_color,
+        verb,
+        args,
     }
 }
 
@@ -403,17 +493,22 @@ fn build_subagent_cell(
     let title = format!("{}: {}", sa.name, label);
 
     // Build activity lines
-    let mut activity: Vec<String> = Vec::new();
+    let mut activity: Vec<ActivityLine> = Vec::new();
 
     for completed in &sa.completed_tools {
         let (verb, arg) =
             format_tool_call_parts_short(&completed.tool_name, &completed.args, shortener);
-        let icon_ch = if completed.success {
-            SUCCESS_CHAR
+        let ic = if completed.success {
+            style_tokens::GREEN_BRIGHT
         } else {
-            FAILURE_CHAR
+            style_tokens::ERROR
         };
-        activity.push(format!("{icon_ch} {verb}({arg})"));
+        activity.push(ActivityLine {
+            icon: format!("{COMPLETED_CHAR} "),
+            icon_color: ic,
+            verb,
+            args: arg,
+        });
     }
 
     for tool_state in sa.active_tools.values() {
@@ -428,7 +523,12 @@ fn build_subagent_cell(
         } else {
             String::new()
         };
-        activity.push(format!("\u{25b8} {spinner_ch} {verb}({arg}){elapsed_str}"));
+        activity.push(ActivityLine {
+            icon: format!("{spinner_ch} "),
+            icon_color: style_tokens::BLUE_BRIGHT,
+            verb,
+            args: format!("{arg}{elapsed_str}"),
+        });
     }
 
     // Footer
@@ -444,7 +544,7 @@ fn build_subagent_cell(
     } else {
         "Working\u{2026}"
     };
-    let footer = format!("{status_str} {elapsed_str} {tool_count} tools");
+    let footer = format!("{status_str} · {elapsed_str} · {tool_count} tools");
     let footer_color = if sa.finished && !sa.success {
         style_tokens::ERROR
     } else if sa.finished {
@@ -491,7 +591,11 @@ fn build_bg_agent_cell(
     };
 
     let title = format!("A: {}", task.query);
-    let mut activity: Vec<String> = task.activity_log.clone();
+    let mut activity: Vec<ActivityLine> = task
+        .activity_log
+        .iter()
+        .map(|line| parse_activity_line(line))
+        .collect();
 
     // Append cleaned error summary for failed/killed tasks
     if matches!(
@@ -506,7 +610,12 @@ fn build_bg_agent_cell(
         } else {
             clean
         };
-        activity.push(format!("\u{2717} {truncated}"));
+        activity.push(ActivityLine {
+            icon: format!("{COMPLETED_CHAR} "),
+            icon_color: style_tokens::ERROR,
+            verb: String::new(),
+            args: truncated,
+        });
     }
 
     let elapsed = task.runtime_seconds();
@@ -521,7 +630,7 @@ fn build_bg_agent_cell(
         crate::managers::background_agents::BackgroundAgentState::Failed => "Failed",
         crate::managers::background_agents::BackgroundAgentState::Killed => "Killed",
     };
-    let footer = format!("{status_str} {elapsed_str} {} tools", task.tool_call_count);
+    let footer = format!("{status_str} · {elapsed_str} · {} tools", task.tool_call_count);
     let footer_color = match task.state {
         crate::managers::background_agents::BackgroundAgentState::Running => style_tokens::SUBTLE,
         crate::managers::background_agents::BackgroundAgentState::Completed => {
@@ -669,11 +778,37 @@ mod tests {
     }
 
     #[test]
-    fn test_line_color() {
-        assert_eq!(line_color("\u{25b8} running"), style_tokens::BLUE_BRIGHT);
-        assert_eq!(line_color("\u{2713} done"), style_tokens::SUCCESS);
-        assert_eq!(line_color("\u{2717} failed"), style_tokens::ERROR);
-        assert_eq!(line_color("\u{27e1} subtle"), style_tokens::SUBTLE);
-        assert_eq!(line_color("normal text"), style_tokens::PRIMARY);
+    fn test_parse_activity_line() {
+        // Running tool: spinner icon, verb bold, args subtle
+        let line = parse_activity_line("\u{25b8} \u{2819} Grep(.route 3s");
+        assert_eq!(line.icon_color, style_tokens::BLUE_BRIGHT);
+        assert_eq!(line.verb, "Grep");
+        assert_eq!(line.args, "(.route 3s");
+
+        // Success: ⏺ icon in green, verb/args split
+        let line = parse_activity_line("\u{2713} Read file.rs");
+        assert_eq!(line.icon_color, style_tokens::GREEN_BRIGHT);
+        assert!(line.icon.contains(COMPLETED_CHAR));
+        assert_eq!(line.verb, "Read");
+        assert_eq!(line.args, " file.rs");
+
+        // Failure: ⏺ icon in red
+        let line = parse_activity_line("\u{2717} Bash(exit 1)");
+        assert_eq!(line.icon_color, style_tokens::ERROR);
+        assert!(line.icon.contains(COMPLETED_CHAR));
+        assert_eq!(line.verb, "Bash");
+        assert_eq!(line.args, "(exit 1)");
+
+        // Thinking: subtle
+        let line = parse_activity_line("\u{27e1} thinking");
+        assert_eq!(line.icon_color, style_tokens::SUBTLE);
+        assert_eq!(line.verb, "thinking");
+
+        // Plain text: no icon
+        let line = parse_activity_line("normal text");
+        assert_eq!(line.icon_color, style_tokens::PRIMARY);
+        assert!(line.icon.is_empty());
+        assert!(line.verb.is_empty());
+        assert_eq!(line.args, "normal text");
     }
 }
