@@ -23,11 +23,8 @@ impl<'a> ConversationWidget<'a> {
         }
     }
 
-    /// Build spinner/progress lines separately from message content.
-    ///
-    /// These are rendered outside the scrollable area so that spinner
-    /// animation (60ms ticks) doesn't shift scroll math or cause jitter.
-    pub(super) fn build_spinner_lines(&self) -> Vec<Line<'a>> {
+    /// Build spinner/progress lines appended to the conversation content.
+    pub(crate) fn build_spinner_lines(&self) -> Vec<Line<'a>> {
         let mut lines: Vec<Line> = Vec::new();
         let shortener = self.get_shortener();
 
@@ -73,9 +70,7 @@ impl<'a> ConversationWidget<'a> {
                 let frame_idx = tool.tick_count % SPINNER_FRAMES.len();
                 let spinner = SPINNER_FRAMES[frame_idx];
 
-                // For spawn_subagent, use nested display
                 if tool.name == "spawn_subagent" {
-                    // Match by parent_tool_id (reliable), fall back to task text.
                     let subagent = self
                         .active_subagents
                         .iter()
@@ -109,7 +104,6 @@ impl<'a> ConversationWidget<'a> {
                         task_desc
                     };
 
-                    // Header: ⠋ AgentName(task description)
                     lines.push(Line::from(vec![
                         Span::styled(
                             format!("{spinner} "),
@@ -131,7 +125,6 @@ impl<'a> ConversationWidget<'a> {
                         self.build_subagent_spinner_lines(sa, &shortener, &mut lines);
                     }
 
-                    // Blank line between subagent blocks
                     lines.push(Line::from(""));
                 } else {
                     // Normal tool: ⠋ verb(arg) (Xs)
@@ -280,6 +273,90 @@ impl<'a> ConversationWidget<'a> {
                     .fg(style_tokens::GREY)
                     .add_modifier(Modifier::ITALIC),
             )));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ConversationWidget;
+    use crate::app::{DisplayMessage, DisplayRole, ToolExecution, ToolState};
+    use crate::widgets::nested_tool::SubagentDisplayState;
+
+    #[test]
+    fn test_25_subagents_all_rendered_individually() {
+        let msgs: Vec<DisplayMessage> = vec![DisplayMessage {
+            role: DisplayRole::Assistant,
+            content: "Spawning 25 agents.".into(),
+            tool_call: None,
+            collapsed: false,
+        }];
+
+        let tools: Vec<ToolExecution> = (0..25)
+            .map(|i| {
+                let mut args = std::collections::HashMap::new();
+                args.insert(
+                    "task".into(),
+                    serde_json::Value::String(format!("Task_{i}")),
+                );
+                args.insert(
+                    "description".into(),
+                    serde_json::Value::String(format!("Task_{i}")),
+                );
+                args.insert(
+                    "agent_type".into(),
+                    serde_json::Value::String(format!("agent_{i}")),
+                );
+                ToolExecution {
+                    id: format!("t{i}"),
+                    name: "spawn_subagent".into(),
+                    output_lines: vec![],
+                    state: ToolState::Running,
+                    elapsed_secs: 1,
+                    started_at: std::time::Instant::now(),
+                    tick_count: 0,
+                    parent_id: None,
+                    depth: 0,
+                    args,
+                }
+            })
+            .collect();
+
+        let subagents: Vec<SubagentDisplayState> = (0..25)
+            .map(|i| {
+                let mut sa = SubagentDisplayState::new(
+                    format!("sa{i}"),
+                    format!("agent_{i}"),
+                    format!("Task_{i}"),
+                );
+                sa.parent_tool_id = Some(format!("t{i}"));
+                sa
+            })
+            .collect();
+
+        let widget = ConversationWidget::new(&msgs, 0)
+            .active_tools(&tools)
+            .active_subagents(&subagents);
+
+        let lines = widget.build_spinner_lines();
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+
+        // No grouping header
+        assert!(
+            !all_text.contains("subagents"),
+            "should not contain grouped 'subagents' text, got: {all_text}"
+        );
+
+        // All 25 agents rendered individually
+        for i in 0..25 {
+            assert!(
+                all_text.contains(&format!("Task_{i}")),
+                "agent Task_{i} missing from spinner output"
+            );
         }
     }
 }

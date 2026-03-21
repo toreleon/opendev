@@ -38,6 +38,29 @@ fn display_message_hash(msg: &DisplayMessage) -> u64 {
 }
 
 impl App {
+    fn conversation_viewport_height(&self) -> usize {
+        let has_todos = !self.state.todo_items.is_empty();
+        let todo_height: u16 = if has_todos {
+            if self.state.todo_expanded {
+                (self.state.todo_items.len() as u16 + 3).min(12)
+            } else {
+                3
+            }
+        } else {
+            0
+        };
+        let input_lines = self.state.input_buffer.matches('\n').count() + 1;
+        let input_height = (input_lines as u16 + 1).min(8);
+        let conv_height = self
+            .state
+            .terminal_height
+            .saturating_sub(todo_height)
+            .saturating_sub(input_height)
+            .saturating_sub(2)
+            .max(5);
+        conv_height.saturating_sub(1) as usize
+    }
+
     pub fn clear_markdown_cache(&mut self) {
         self.state.markdown_cache.clear();
     }
@@ -127,8 +150,15 @@ impl App {
         self.state.per_message_line_counts.truncate(first_dirty);
 
         // --- Viewport culling ---
-        let viewport_h = self.state.terminal_height as usize;
-        let buffer_lines = 50;
+        let viewport_h = self.conversation_viewport_height();
+        let mut buffer_lines = 50usize;
+        if self.state.task_progress.is_some()
+            || !self.state.active_tools.is_empty()
+            || !self.state.active_subagents.is_empty()
+            || self.state.agent_active
+        {
+            buffer_lines = buffer_lines.max(viewport_h.saturating_mul(4));
+        }
         let visible_from_bottom = self.state.scroll_offset as usize + viewport_h + buffer_lines;
 
         let msg_line_estimates: Vec<usize> = self
@@ -795,7 +825,6 @@ mod tests {
         use crate::widgets::conversation::ConversationWidget;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use ratatui::layout::Rect;
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -851,6 +880,348 @@ mod tests {
         assert!(
             all_text.contains("result is clear"),
             "Cached assistant content missing from rendered buffer.\nBuffer:\n{all_text}"
+        );
+    }
+
+    #[test]
+    fn test_active_subagents_keep_recent_reasoning_lines_cached() {
+        let mut app = App::new();
+        app.state.terminal_width = 60;
+        app.state.terminal_height = 12;
+        for i in 0..40 {
+            app.state.messages.push(DisplayMessage {
+                role: DisplayRole::User,
+                content: format!("Older message {i}"),
+                tool_call: None,
+                collapsed: false,
+            });
+        }
+        app.state.messages.push(DisplayMessage {
+            role: DisplayRole::Reasoning,
+            content: "Thinking through how to split this work safely.".into(),
+            tool_call: None,
+            collapsed: false,
+        });
+        app.state.messages.push(DisplayMessage {
+            role: DisplayRole::Assistant,
+            content: "I will spawn 2 agents to explore the codebase.".into(),
+            tool_call: None,
+            collapsed: false,
+        });
+        app.state.agent_active = true;
+        app.state.active_tools.push(ToolExecution {
+            id: "t0".into(),
+            name: "spawn_subagent".into(),
+            output_lines: vec![],
+            state: ToolState::Running,
+            elapsed_secs: 1,
+            started_at: std::time::Instant::now(),
+            tick_count: 0,
+            parent_id: None,
+            depth: 0,
+            args: std::collections::HashMap::new(),
+        });
+        app.state.message_generation = 1;
+        app.rebuild_cached_lines();
+
+        let all_text: String = app
+            .state
+            .cached_lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            all_text.contains("Thinking through"),
+            "recent reasoning line was culled while tools were active: {all_text}"
+        );
+        assert!(
+            all_text.contains("spawn 2 agents"),
+            "recent assistant line was culled while tools were active: {all_text}"
+        );
+    }
+
+    #[test]
+    fn test_reasoning_to_subagent_transition_remains_visible_in_short_tui() {
+        use crate::widgets::conversation::ConversationWidget;
+        use crate::widgets::nested_tool::SubagentDisplayState;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(60, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new();
+        app.state.terminal_width = 60;
+        app.state.terminal_height = 16;
+        app.state.messages.push(DisplayMessage {
+            role: DisplayRole::Reasoning,
+            content: "Thinking through the codebase structure.".into(),
+            tool_call: None,
+            collapsed: false,
+        });
+        app.state.messages.push(DisplayMessage {
+            role: DisplayRole::Assistant,
+            content: "I will spawn 2 agents to explore the codebase.".into(),
+            tool_call: None,
+            collapsed: false,
+        });
+
+        let tasks = ["Inspect auth flow", "Trace API routes"];
+        let tools: Vec<ToolExecution> = tasks
+            .iter()
+            .enumerate()
+            .map(|(i, task)| {
+                let mut args = std::collections::HashMap::new();
+                args.insert("task".into(), serde_json::Value::String(task.to_string()));
+                args.insert(
+                    "description".into(),
+                    serde_json::Value::String(task.to_string()),
+                );
+                ToolExecution {
+                    id: format!("t{i}"),
+                    name: "spawn_subagent".into(),
+                    output_lines: vec![],
+                    state: ToolState::Running,
+                    elapsed_secs: 2,
+                    started_at: std::time::Instant::now(),
+                    tick_count: 0,
+                    parent_id: None,
+                    depth: 0,
+                    args,
+                }
+            })
+            .collect();
+        let subagents: Vec<SubagentDisplayState> = tasks
+            .iter()
+            .enumerate()
+            .map(|(i, task)| {
+                let mut sa =
+                    SubagentDisplayState::new(format!("sa{i}"), "explore".into(), task.to_string());
+                sa.parent_tool_id = Some(format!("t{i}"));
+                sa
+            })
+            .collect();
+
+        app.state.active_tools = tools.clone();
+        app.state.active_subagents = subagents.clone();
+        app.state.message_generation = 1;
+        app.rebuild_cached_lines();
+
+        let cached = app.state.cached_lines.clone();
+        let msgs = app.state.messages.clone();
+        terminal
+            .draw(|frame| {
+                let widget = ConversationWidget::new(&msgs, 0)
+                    .cached_lines(&cached)
+                    .active_tools(&tools)
+                    .active_subagents(&subagents);
+                frame.render_widget(widget, frame.area());
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let mut all_text = String::new();
+        for y in 0..16u16 {
+            for x in 0..60u16 {
+                if let Some(cell) = buf.cell(ratatui::layout::Position::new(x, y)) {
+                    all_text.push_str(cell.symbol());
+                }
+            }
+            all_text.push('\n');
+        }
+
+        assert!(
+            all_text.contains("spawn 2 agents"),
+            "assistant handoff text disappeared from TUI.\nBuffer:\n{all_text}"
+        );
+        // Each subagent should be rendered individually (no grouping)
+        assert!(
+            all_text.contains("Inspect auth flow") || all_text.contains("Trace API routes"),
+            "individual subagent spinners missing from TUI.\nBuffer:\n{all_text}"
+        );
+        assert!(
+            !all_text.contains("2 subagents"),
+            "subagents should not be grouped.\nBuffer:\n{all_text}"
+        );
+    }
+
+    #[test]
+    fn test_event_sequence_reasoning_then_spawn_subagent_keeps_context() {
+        use crate::event::AppEvent;
+
+        let mut app = App::new();
+        app.state.terminal_width = 60;
+        app.state.terminal_height = 8;
+
+        app.handle_event(AppEvent::ReasoningContent(
+            "Thinking through the codebase structure.".into(),
+        ));
+        app.handle_event(AppEvent::AgentChunk(
+            "I will spawn 2 agents to explore the codebase.".into(),
+        ));
+        app.handle_event(AppEvent::ToolStarted {
+            tool_id: "t1".into(),
+            tool_name: "spawn_subagent".into(),
+            args: {
+                let mut args = std::collections::HashMap::new();
+                args.insert("task".into(), serde_json::Value::String("Inspect auth flow".into()));
+                args.insert(
+                    "description".into(),
+                    serde_json::Value::String("Inspect auth flow".into()),
+                );
+                args
+            },
+        });
+        app.handle_event(AppEvent::ToolStarted {
+            tool_id: "t2".into(),
+            tool_name: "spawn_subagent".into(),
+            args: {
+                let mut args = std::collections::HashMap::new();
+                args.insert("task".into(), serde_json::Value::String("Trace API routes".into()));
+                args.insert(
+                    "description".into(),
+                    serde_json::Value::String("Trace API routes".into()),
+                );
+                args
+            },
+        });
+
+        app.rebuild_cached_lines();
+        let all_text: String = app
+            .state
+            .cached_lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            all_text.contains("Thinking through"),
+            "reasoning context disappeared after ToolStarted events: {all_text}"
+        );
+        assert!(
+            all_text.contains("spawn 2 agents"),
+            "assistant handoff disappeared after ToolStarted events: {all_text}"
+        );
+        assert_eq!(app.state.active_tools.len(), 2);
+        assert_eq!(app.state.active_subagents.len(), 2);
+    }
+
+    #[test]
+    fn test_25_subagents_render_to_terminal() {
+        use crate::widgets::conversation::ConversationWidget;
+        use crate::widgets::nested_tool::SubagentDisplayState;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(120, 80);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new();
+        app.state.terminal_width = 120;
+        app.state.terminal_height = 80;
+        app.state.messages.push(DisplayMessage {
+            role: DisplayRole::Reasoning,
+            content: "Planning 25 parallel explorations.".into(),
+            tool_call: None,
+            collapsed: false,
+        });
+        app.state.messages.push(DisplayMessage {
+            role: DisplayRole::Assistant,
+            content: "I will spawn 25 agents to explore the codebase.".into(),
+            tool_call: None,
+            collapsed: false,
+        });
+
+        let tools: Vec<ToolExecution> = (0..25)
+            .map(|i| {
+                let mut args = std::collections::HashMap::new();
+                args.insert(
+                    "task".into(),
+                    serde_json::Value::String(format!("Explore area {i}")),
+                );
+                args.insert(
+                    "description".into(),
+                    serde_json::Value::String(format!("Explore area {i}")),
+                );
+                ToolExecution {
+                    id: format!("t{i}"),
+                    name: "spawn_subagent".into(),
+                    output_lines: vec![],
+                    state: ToolState::Running,
+                    elapsed_secs: 2,
+                    started_at: std::time::Instant::now(),
+                    tick_count: 0,
+                    parent_id: None,
+                    depth: 0,
+                    args,
+                }
+            })
+            .collect();
+
+        let subagents: Vec<SubagentDisplayState> = (0..25)
+            .map(|i| {
+                let mut sa = SubagentDisplayState::new(
+                    format!("sa{i}"),
+                    "explore".into(),
+                    format!("Explore area {i}"),
+                );
+                sa.parent_tool_id = Some(format!("t{i}"));
+                sa
+            })
+            .collect();
+
+        app.state.active_tools = tools.clone();
+        app.state.active_subagents = subagents.clone();
+        app.state.agent_active = true;
+        app.state.message_generation = 1;
+        app.rebuild_cached_lines();
+
+        let cached = app.state.cached_lines.clone();
+        let msgs = app.state.messages.clone();
+        terminal
+            .draw(|frame| {
+                let widget = ConversationWidget::new(&msgs, 0)
+                    .cached_lines(&cached)
+                    .active_tools(&tools)
+                    .active_subagents(&subagents);
+                frame.render_widget(widget, frame.area());
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let mut all_text = String::new();
+        for y in 0..80u16 {
+            for x in 0..120u16 {
+                if let Some(cell) = buf.cell(ratatui::layout::Position::new(x, y)) {
+                    all_text.push_str(cell.symbol());
+                }
+            }
+            all_text.push('\n');
+        }
+
+        // At least 20 of the 25 agent descriptions should appear (accounting for scroll)
+        let mut found = 0;
+        for i in 0..25 {
+            if all_text.contains(&format!("Explore area {i}")) {
+                found += 1;
+            }
+        }
+        assert!(
+            found >= 20,
+            "expected at least 20 of 25 agent descriptions visible, found {found}.\nBuffer:\n{all_text}"
+        );
+
+        // No grouping text
+        assert!(
+            !all_text.contains("25 subagents"),
+            "should not contain grouped subagent text.\nBuffer:\n{all_text}"
+        );
+
+        // Assistant handoff text should still be visible
+        assert!(
+            all_text.contains("spawn 25 agents"),
+            "assistant handoff text should be visible.\nBuffer:\n{all_text}"
         );
     }
 
