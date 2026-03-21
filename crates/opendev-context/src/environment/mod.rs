@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_claude_instructions_dir() {
+    fn test_claude_instructions_dir_not_loaded() {
         let dir = TempDir::new().unwrap();
         let dir_path = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(dir_path.join(".claude")).unwrap();
@@ -429,12 +429,12 @@ mod tests {
         std::fs::create_dir(dir_path.join(".git")).unwrap();
 
         let files = discover_instruction_files(&dir_path);
-        assert_eq!(files.len(), 1);
-        assert!(files[0].content.contains("Claude-specific instructions"));
+        // .claude/instructions.md should not be loaded
+        assert_eq!(files.len(), 0);
     }
 
     #[test]
-    fn test_discover_both_opendev_and_claude_instructions() {
+    fn test_only_opendev_instructions_loaded() {
         let dir = TempDir::new().unwrap();
         let dir_path = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(dir_path.join(".opendev")).unwrap();
@@ -444,10 +444,8 @@ mod tests {
         std::fs::create_dir(dir_path.join(".git")).unwrap();
 
         let files = discover_instruction_files(&dir_path);
-        assert_eq!(files.len(), 2);
-        let contents: Vec<&str> = files.iter().map(|f| f.content.as_str()).collect();
-        assert!(contents.iter().any(|c| c.contains("OpenDev rules")));
-        assert!(contents.iter().any(|c| c.contains("Claude rules")));
+        assert_eq!(files.len(), 1);
+        assert!(files[0].content.contains("OpenDev rules"));
     }
 
     #[test]

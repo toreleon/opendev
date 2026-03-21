@@ -65,9 +65,9 @@ impl SubagentManager {
     /// Create a manager with built-in specs plus custom agents loaded from disk.
     ///
     /// Scans agent directories from lowest to highest priority:
-    /// 1. Global: `~/.opendev/agents/`, `~/.agents/agents/`, `~/.claude/agents/`
-    /// 2. Walk from git root down to working_dir: `.opendev/agents/`, `.agents/agents/`,
-    ///    `.claude/agents/` at each level (monorepo support)
+    /// 1. Global: `~/.opendev/agents/`
+    /// 2. Walk from git root down to working_dir: `.opendev/agents/`
+    ///    at each level (monorepo support)
     ///
     /// Custom agents override built-ins with the same name.
     pub fn with_builtins_and_custom(working_dir: &std::path::Path) -> Self {
@@ -91,14 +91,11 @@ impl SubagentManager {
         // Order: lowest priority first (later register() calls override earlier).
         let mut dirs = Vec::new();
 
-        // 1. Global dirs (lowest priority)
-        for subdir in &[".opendev", ".agents", ".claude"] {
-            dirs.push(home.join(subdir).join("agents"));
-        }
+        // 1. Global dir
+        dirs.push(home.join(".opendev").join("agents"));
 
         // 2. Walk from working_dir up to git root, collect directory levels
         //    Parent dirs have lower priority than child dirs.
-        //    Within each level: .opendev < .agents < .claude
         let mut levels: Vec<std::path::PathBuf> = Vec::new();
         {
             let mut current = working_dir.to_path_buf();
@@ -112,9 +109,7 @@ impl SubagentManager {
         // Reverse so parent dirs (lower priority) load first, working_dir loads last
         levels.reverse();
         for level in &levels {
-            for subdir in &[".opendev", ".agents", ".claude"] {
-                dirs.push(level.join(subdir).join("agents"));
-            }
+            dirs.push(level.join(".opendev").join("agents"));
         }
 
         for spec in super::custom_loader::load_custom_agents(&dirs) {
@@ -374,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn test_agents_from_dot_agents_directory() {
+    fn test_dot_agents_directory_not_loaded() {
         let tmp = tempfile::tempdir().unwrap();
         let agent_dir = tmp.path().join(".agents").join("agents");
         std::fs::create_dir_all(&agent_dir).unwrap();
@@ -385,16 +380,15 @@ mod tests {
         .unwrap();
 
         let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
-        assert!(mgr.get("reviewer").is_some());
-        let spec = mgr.get("reviewer").unwrap();
-        assert!(spec.system_prompt.contains("review code"));
+        // .agents/ agents should not be loaded
+        assert!(mgr.get("reviewer").is_none());
     }
 
     #[test]
-    fn test_agent_priority_claude_over_agents_over_opendev() {
+    fn test_only_opendev_agents_dir_loaded() {
         let tmp = tempfile::tempdir().unwrap();
 
-        // Create same-named agent in all three dirs
+        // Create agents in .opendev, .agents, and .claude dirs
         let opendev_dir = tmp.path().join(".opendev").join("agents");
         let agents_dir = tmp.path().join(".agents").join("agents");
         let claude_dir = tmp.path().join(".claude").join("agents");
@@ -413,15 +407,17 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            claude_dir.join("shared.md"),
+            claude_dir.join("only-claude.md"),
             "---\ndescription: From .claude\n---\nClaude version.",
         )
         .unwrap();
 
         let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
         let spec = mgr.get("shared").unwrap();
-        // .claude has highest priority
-        assert_eq!(spec.description, "From .claude");
+        // Only .opendev is loaded
+        assert_eq!(spec.description, "From .opendev");
+        // .claude and .agents agents should not be loaded
+        assert!(mgr.get("only-claude").is_none());
     }
 
     #[test]
@@ -501,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn test_with_claude_agents_dir() {
+    fn test_claude_agents_dir_not_loaded() {
         let tmp = tempfile::tempdir().unwrap();
         let claude_dir = tmp.path().join(".claude").join("agents");
         std::fs::create_dir_all(&claude_dir).unwrap();
@@ -512,38 +508,8 @@ mod tests {
         .unwrap();
 
         let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
-        assert!(mgr.get("claude-agent").is_some());
-    }
-
-    #[test]
-    fn test_claude_agents_higher_priority_than_opendev() {
-        let tmp = tempfile::tempdir().unwrap();
-
-        // Create same-named agent in both directories
-        let claude_dir = tmp.path().join(".claude").join("agents");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        std::fs::write(
-            claude_dir.join("reviewer.md"),
-            "---\ndescription: Claude reviewer\n---\nClaude reviewer.",
-        )
-        .unwrap();
-
-        let opendev_dir = tmp.path().join(".opendev").join("agents");
-        std::fs::create_dir_all(&opendev_dir).unwrap();
-        std::fs::write(
-            opendev_dir.join("reviewer.md"),
-            "---\ndescription: OpenDev reviewer\n---\nOpenDev reviewer.",
-        )
-        .unwrap();
-
-        let mgr = SubagentManager::with_builtins_and_custom(tmp.path());
-        let spec = mgr.get("reviewer").unwrap();
-        // .claude/ is loaded last (highest priority), so it wins
-        assert!(
-            spec.system_prompt.contains("Claude reviewer"),
-            "Claude agent should override OpenDev agent, got: {}",
-            spec.system_prompt
-        );
+        // .claude/ agents should not be loaded
+        assert!(mgr.get("claude-agent").is_none());
     }
 
     // ---- Disabled agent filtering ----

@@ -1,4 +1,4 @@
-//! Custom commands loaded from `.opendev/commands/` and `.claude/commands/`.
+//! Custom commands loaded from `.opendev/commands/`.
 //!
 //! Text files in the commands directories become slash commands. Supports:
 //! - YAML frontmatter for metadata (`description`, `model`, `agent`, `subtask`)
@@ -83,8 +83,8 @@ impl CustomCommandLoader {
 
     /// Load all custom commands from command directories.
     ///
-    /// Scans `.opendev/commands/`, `.claude/commands/` under the project
-    /// directory (higher priority) and then global directories. Results are cached.
+    /// Scans `.opendev/commands/` under the project directory (higher priority)
+    /// and then the global directory. Results are cached.
     pub fn load_commands(&mut self) -> &HashMap<String, CustomCommand> {
         if let Some(ref cmds) = self.commands {
             return cmds;
@@ -205,25 +205,21 @@ impl CustomCommandLoader {
 
     /// Get command directories in priority order: project-local first, then global.
     ///
-    /// Searches both `.opendev/commands/` and `.claude/commands/` at each level.
+    /// Searches `.opendev/commands/` at project and global levels.
     fn get_command_dirs(&self) -> Vec<(PathBuf, &'static str)> {
         let mut dirs = Vec::new();
 
         // Project-local commands (highest priority)
-        for subdir in &[".opendev/commands", ".claude/commands"] {
-            let local = self.working_dir.join(subdir);
-            if local.is_dir() {
-                dirs.push((local, "project"));
-            }
+        let local = self.working_dir.join(".opendev/commands");
+        if local.is_dir() {
+            dirs.push((local, "project"));
         }
 
         // User-global commands
         if let Some(home) = dirs_next::home_dir() {
-            for subdir in &[".opendev/commands", ".claude/commands"] {
-                let global = home.join(subdir);
-                if global.is_dir() {
-                    dirs.push((global, "global"));
-                }
+            let global = home.join(".opendev/commands");
+            if global.is_dir() {
+                dirs.push((global, "global"));
             }
         }
 
@@ -344,10 +340,10 @@ mod tests {
         assert_eq!(cmd.description, "From frontmatter");
     }
 
-    // ── .claude/commands/ directory support ──
+    // ── Only .opendev/commands/ is supported ──
 
     #[test]
-    fn test_loader_claude_commands_dir() {
+    fn test_loader_claude_commands_dir_not_loaded() {
         let tmp = TempDir::new().unwrap();
         let cmd_dir = tmp.path().join(".claude").join("commands");
         fs::create_dir_all(&cmd_dir).unwrap();
@@ -355,30 +351,7 @@ mod tests {
 
         let mut loader = CustomCommandLoader::new(tmp.path());
         let commands = loader.load_commands();
-        assert_eq!(commands.len(), 1);
-        assert!(commands.contains_key("deploy"));
-    }
-
-    #[test]
-    fn test_loader_opendev_overrides_claude() {
-        let tmp = TempDir::new().unwrap();
-
-        // Same command in both dirs
-        let opendev_dir = tmp.path().join(".opendev").join("commands");
-        let claude_dir = tmp.path().join(".claude").join("commands");
-        fs::create_dir_all(&opendev_dir).unwrap();
-        fs::create_dir_all(&claude_dir).unwrap();
-        fs::write(
-            opendev_dir.join("review.md"),
-            "# OpenDev review\nFrom opendev",
-        )
-        .unwrap();
-        fs::write(claude_dir.join("review.md"), "# Claude review\nFrom claude").unwrap();
-
-        let mut loader = CustomCommandLoader::new(tmp.path());
-        let cmd = loader.get_command("review").unwrap();
-        // .opendev has higher priority (loaded first, or_insert prevents override)
-        assert_eq!(cmd.description, "OpenDev review");
+        assert_eq!(commands.len(), 0);
     }
 
     #[test]

@@ -784,18 +784,17 @@ mod tests {
         assert_eq!(skill.metadata.model.as_deref(), Some("gpt-4o-mini"));
     }
 
-    // ---- Directory discovery across .claude, .agents, .opendev ----
+    // ---- Only .opendev/skills is scanned ----
 
     #[test]
-    fn test_discover_skills_from_claude_skills_dir() {
+    fn test_discover_skills_from_opendev_skills_dir() {
         let tmp = TempDir::new().unwrap();
-        let claude_dir = tmp.path().join(".claude");
-        let skills_dir = claude_dir.join("skills");
+        let skills_dir = tmp.path().join(".opendev").join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
 
         fs::write(
             skills_dir.join("my-tool.md"),
-            "---\nname: my-tool\ndescription: A tool from .claude/skills\n---\n\n# My Tool\n",
+            "---\nname: my-tool\ndescription: A tool from .opendev/skills\n---\n\n# My Tool\n",
         )
         .unwrap();
 
@@ -804,87 +803,6 @@ mod tests {
 
         let names: Vec<String> = skills.iter().map(|s| s.full_name()).collect();
         assert!(names.contains(&"my-tool".to_string()));
-    }
-
-    #[test]
-    fn test_claude_skills_higher_priority_than_opendev() {
-        let tmp = TempDir::new().unwrap();
-
-        let claude_skills = tmp.path().join(".claude").join("skills");
-        let opendev_skills = tmp.path().join(".opendev").join("skills");
-        fs::create_dir_all(&claude_skills).unwrap();
-        fs::create_dir_all(&opendev_skills).unwrap();
-
-        fs::write(
-            claude_skills.join("myskill.md"),
-            "---\nname: myskill\ndescription: From .claude (high prio)\n---\n\nClaude content.\n",
-        )
-        .unwrap();
-
-        fs::write(
-            opendev_skills.join("myskill.md"),
-            "---\nname: myskill\ndescription: From .opendev (low prio)\n---\n\nOpenDev content.\n",
-        )
-        .unwrap();
-
-        // .claude/skills first = highest priority
-        let mut loader = SkillLoader::new(vec![claude_skills, opendev_skills]);
-        let skills = loader.discover_skills();
-
-        let myskill = skills.iter().find(|s| s.name == "myskill").unwrap();
-        assert_eq!(myskill.description, "From .claude (high prio)");
-    }
-
-    #[test]
-    fn test_agents_skills_directory_discovered() {
-        let tmp = TempDir::new().unwrap();
-
-        let agents_skills = tmp.path().join(".agents").join("skills");
-        fs::create_dir_all(&agents_skills).unwrap();
-
-        fs::write(
-            agents_skills.join("deploy.md"),
-            "---\nname: deploy\ndescription: Deploy helper from .agents\n---\n\n# Deploy\nDeploy instructions.\n",
-        )
-        .unwrap();
-
-        let mut loader = SkillLoader::new(vec![agents_skills]);
-        let skills = loader.discover_skills();
-
-        let deploy = skills.iter().find(|s| s.name == "deploy").unwrap();
-        assert_eq!(deploy.description, "Deploy helper from .agents");
-    }
-
-    #[test]
-    fn test_skill_priority_claude_over_agents_over_opendev() {
-        let tmp = TempDir::new().unwrap();
-
-        let claude_skills = tmp.path().join(".claude").join("skills");
-        let agents_skills = tmp.path().join(".agents").join("skills");
-        let opendev_skills = tmp.path().join(".opendev").join("skills");
-        fs::create_dir_all(&claude_skills).unwrap();
-        fs::create_dir_all(&agents_skills).unwrap();
-        fs::create_dir_all(&opendev_skills).unwrap();
-
-        fs::write(
-            agents_skills.join("shared.md"),
-            "---\nname: shared\ndescription: From .agents\n---\n\nAgents content.\n",
-        )
-        .unwrap();
-
-        fs::write(
-            opendev_skills.join("shared.md"),
-            "---\nname: shared\ndescription: From .opendev\n---\n\nOpenDev content.\n",
-        )
-        .unwrap();
-
-        // Priority: .claude > .agents > .opendev
-        let mut loader = SkillLoader::new(vec![claude_skills, agents_skills, opendev_skills]);
-        let skills = loader.discover_skills();
-
-        let shared = skills.iter().find(|s| s.name == "shared").unwrap();
-        // .agents has higher priority than .opendev
-        assert_eq!(shared.description, "From .agents");
     }
 
     // --- URL skill discovery tests ---

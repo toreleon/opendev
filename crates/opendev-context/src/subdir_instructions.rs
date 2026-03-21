@@ -115,8 +115,8 @@ impl SubdirInstructionTracker {
                 }
             }
 
-            // Also check .opendev/instructions.md and .claude/instructions.md
-            for subdir in &[".opendev", ".claude"] {
+            // Also check .opendev/instructions.md
+            for subdir in &[".opendev"] {
                 let candidate = current.join(subdir).join("instructions.md");
                 if let Ok(canonical) = candidate.canonicalize() {
                     if self.injected.contains(&canonical) {

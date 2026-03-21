@@ -27,11 +27,10 @@ const REMOTE_INSTRUCTION_TIMEOUT_SECS: u64 = 5;
 
 /// Discover project instruction files by walking up from `working_dir`.
 ///
-/// Searches for `AGENTS.md`, `CLAUDE.md` in the working directory
+/// Searches for `AGENTS.md` and `CLAUDE.md` in the working directory
 /// and each parent up to the filesystem root (or git root). Also checks
-/// `.opendev/instructions.md` and `.claude/instructions.md` in each directory,
-/// and global config at `~/.opendev/instructions.md`, `~/.config/opendev/AGENTS.md`,
-/// and `~/.claude/CLAUDE.md`.
+/// `.opendev/instructions.md` in each directory,
+/// and global config at `~/.opendev/instructions.md` and `~/.config/opendev/AGENTS.md`.
 ///
 /// Files found closer to `working_dir` have higher priority and are listed first.
 pub fn discover_instruction_files(working_dir: &Path) -> Vec<InstructionFile> {
@@ -47,11 +46,9 @@ pub fn discover_instruction_files(working_dir: &Path) -> Vec<InstructionFile> {
             try_add_instruction(&candidate, &current, working_dir, &mut files, &mut seen);
         }
 
-        // Check .opendev/instructions.md and .claude/instructions.md
+        // Check .opendev/instructions.md
         let opendev_instr = current.join(".opendev").join("instructions.md");
         try_add_instruction(&opendev_instr, &current, working_dir, &mut files, &mut seen);
-        let claude_instr = current.join(".claude").join("instructions.md");
-        try_add_instruction(&claude_instr, &current, working_dir, &mut files, &mut seen);
 
         // Check compatibility files from other AI tools (.cursorrules, copilot, etc.)
         for compat_path in COMPAT_INSTRUCTION_FILES {
@@ -96,7 +93,6 @@ pub fn discover_instruction_files(working_dir: &Path) -> Vec<InstructionFile> {
             home.join(".opendev").join("instructions.md"),
             home.join(".opendev").join("AGENTS.md"),
             home.join(".config").join("opendev").join("AGENTS.md"),
-            home.join(".claude").join("CLAUDE.md"),
         ];
         for path in &global_paths {
             try_add_instruction(
@@ -151,7 +147,6 @@ fn try_add_instruction(
         "project".to_string()
     } else if dir.to_string_lossy().contains(".opendev")
         || dir.to_string_lossy().contains(".config")
-        || dir.to_string_lossy().contains(".claude")
     {
         "global".to_string()
     } else {

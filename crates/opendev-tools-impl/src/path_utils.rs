@@ -42,7 +42,6 @@ pub fn validate_path_access(resolved: &Path, working_dir: &Path) -> Result<(), S
     if let Some(home) = dirs::home_dir() {
         let allowed_prefixes = [
             home.join(".opendev"),
-            home.join(".claude"),
             home.join(".config").join("opendev"),
         ];
         for prefix in &allowed_prefixes {
@@ -170,12 +169,12 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_path_home_claude_allowed() {
+    fn test_validate_path_home_claude_blocked() {
         let tmp = TempDir::new().unwrap();
         let wd = tmp.path().canonicalize().unwrap();
         if let Some(home) = dirs::home_dir() {
             let claude_path = home.join(".claude/skills/my-skill.md");
-            assert!(validate_path_access(&claude_path, &wd).is_ok());
+            assert!(validate_path_access(&claude_path, &wd).is_err());
         }
     }
 

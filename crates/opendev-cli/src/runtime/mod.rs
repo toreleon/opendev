@@ -108,9 +108,8 @@ impl AgentRuntime {
         }
 
         // Register invoke_skill tool with project-local and user-global skill dirs.
-        // Priority order (first = highest): .claude/skills > .agents/skills > .opendev/skills
-        // at each level from working_dir up to git root, then global dirs,
-        // then config-specified skill_paths (lowest priority among custom dirs).
+        // Scans .opendev/skills at each level from working_dir up to git root,
+        // then global dir, then config-specified skill_paths (lowest priority).
         let mut skill_dirs = Vec::new();
 
         // Walk from working_dir up to git root, scanning for skill directories
@@ -132,21 +131,16 @@ impl AgentRuntime {
         {
             let mut current = working_dir.to_path_buf();
             loop {
-                for subdir in &[".claude", ".agents", ".opendev"] {
-                    let skills_dir = current.join(subdir).join("skills");
-                    skill_dirs.push(skills_dir);
-                }
+                skill_dirs.push(current.join(".opendev").join("skills"));
                 if current == stop_dir || !current.pop() {
                     break;
                 }
             }
         }
 
-        // Global (home) skill directories
+        // Global (home) skill directory
         if let Some(home) = dirs_next::home_dir() {
-            for subdir in &[".claude", ".agents", ".opendev"] {
-                skill_dirs.push(home.join(subdir).join("skills"));
-            }
+            skill_dirs.push(home.join(".opendev").join("skills"));
         }
         // Append config-specified skill paths (resolved relative to working_dir, ~/expanded)
         for path in &config.skill_paths {
