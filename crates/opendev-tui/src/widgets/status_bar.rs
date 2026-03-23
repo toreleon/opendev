@@ -308,7 +308,7 @@ impl Widget for StatusBarWidget<'_> {
 
         // Right-aligned section: cost + context remaining
         let context_left = (100.0 - self.context_usage_pct).max(0.0);
-        let pct_str = format!("{context_left:.1}");
+        let pct_str = format!("{:>5}", format!("{context_left:.1}"));
         let pct_color = if context_left > 50.0 {
             style_tokens::GREEN_LIGHT
         } else if context_left > 25.0 {
@@ -319,75 +319,64 @@ impl Widget for StatusBarWidget<'_> {
 
         let cost_str = if self.session_cost > 0.0 {
             if self.session_cost < 0.01 {
-                format!("${:.4}", self.session_cost)
+                format!("{:>7}", format!("${:.4}", self.session_cost))
             } else {
-                format!("${:.2}", self.session_cost)
+                format!("{:>7}", format!("${:.2}", self.session_cost))
             }
         } else {
             String::new()
         };
 
-        // Calculate total left-side width for gap
-        let left_len: usize = spans.iter().map(|s| s.content.width()).sum();
-        let right_text = if cost_str.is_empty() {
-            format!("Context left {pct_str}%")
-        } else {
-            format!("Cost {cost_str}  \u{2502}  Context left {pct_str}%")
-        };
-        let right_len = right_text.width();
-
-        let available_width = area.width as usize;
-        let gap = available_width.saturating_sub(left_len + right_len);
-        if gap >= 2 {
-            spans.push(Span::raw(" ".repeat(gap)));
-        } else {
-            spans.push(Span::styled(
-                "  \u{2502}  ",
-                Style::default().fg(style_tokens::GREY),
-            ));
-        }
-
-        // Cost display
+        // Build right-side spans
+        let mut right_spans: Vec<Span> = Vec::new();
         if !cost_str.is_empty() {
-            spans.push(Span::styled(
+            right_spans.push(Span::styled(
                 "Cost ",
                 Style::default().fg(style_tokens::GREY),
             ));
-            spans.push(Span::styled(
+            right_spans.push(Span::styled(
                 cost_str,
                 Style::default()
                     .fg(style_tokens::CYAN)
                     .add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled(
+            right_spans.push(Span::styled(
                 "  \u{2502}  ",
                 Style::default().fg(style_tokens::GREY),
             ));
         }
-
-        // Context remaining
-        spans.push(Span::styled(
+        right_spans.push(Span::styled(
             format!("Context left {pct_str}%"),
             Style::default().fg(pct_color).add_modifier(Modifier::BOLD),
         ));
 
-        // Render a thin border line at top, then text below
-        let line = Line::from(spans);
-        if area.height >= 2 {
-            // Draw thin border
-            let border_line: String = "\u{2500}".repeat(area.width as usize);
+        let right_len: usize = right_spans.iter().map(|s| s.content.width()).sum();
+        let available_width = area.width as usize;
+
+        // Determine the row to render on
+        let row = if area.height >= 2 {
+            // Draw thin border on the first row
+            let border_line: String = "\u{2500}".repeat(available_width);
             buf.set_string(
                 area.left(),
                 area.top(),
                 &border_line,
                 Style::default().fg(style_tokens::BORDER),
             );
-            // Render text on second row
-            buf.set_line(area.left(), area.top() + 1, &line, area.width);
+            area.top() + 1
         } else {
-            // Single row: just render text, no border
-            buf.set_line(area.left(), area.top(), &line, area.width);
-        }
+            area.top()
+        };
+
+        // Render right spans at fixed position (anchored to right edge)
+        let right_start = area.right().saturating_sub(right_len as u16);
+        let right_line = Line::from(right_spans);
+        buf.set_line(right_start, row, &right_line, right_len as u16);
+
+        // Render left spans, truncated so they don't overlap the right section
+        let left_max_width = (right_start as usize).saturating_sub(area.left() as usize + 2);
+        let left_line = Line::from(spans);
+        buf.set_line(area.left(), row, &left_line, left_max_width as u16);
     }
 }
 
