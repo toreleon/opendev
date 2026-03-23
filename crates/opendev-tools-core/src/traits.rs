@@ -476,7 +476,8 @@ mod tests {
             idle_timeout_secs: 30,
             max_timeout_secs: 300,
         };
-        let ctx = ToolContext::new(std::env::temp_dir().join("project")).with_timeout_config(config);
+        let ctx =
+            ToolContext::new(std::env::temp_dir().join("project")).with_timeout_config(config);
         assert!(ctx.timeout_config.is_some());
         let tc = ctx.timeout_config.unwrap();
         assert_eq!(tc.idle_timeout_secs, 30);

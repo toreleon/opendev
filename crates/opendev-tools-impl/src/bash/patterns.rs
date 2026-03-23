@@ -336,6 +336,7 @@ mod tests {
         assert!(!is_sensitive_env("NODE_ENV"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_filtered_env_excludes_sensitive() {
         // Set a known sensitive env var for the test.

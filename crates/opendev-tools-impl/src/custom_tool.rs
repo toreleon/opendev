@@ -401,6 +401,7 @@ mod tests {
         assert!(result.error.unwrap().contains("not found"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_execute_simple_command() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -428,6 +429,7 @@ mod tests {
         assert!(result.output.unwrap().contains("hello from custom tool"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_execute_failing_command() {
         let tmp = tempfile::TempDir::new().unwrap();

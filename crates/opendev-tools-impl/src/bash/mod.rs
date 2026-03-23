@@ -600,7 +600,7 @@ impl BaseTool for BashTool {
 // Tests
 // ===========================================================================
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
