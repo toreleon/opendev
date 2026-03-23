@@ -782,6 +782,8 @@ impl App {
                     {
                         tc.collapsed = !tc.collapsed;
                         self.state.message_generation += 1;
+                        self.state.scroll_offset = 0;
+                        self.state.user_scrolled = false;
                         toggled = true;
                         break;
                     }

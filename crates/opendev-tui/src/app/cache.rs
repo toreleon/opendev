@@ -151,7 +151,7 @@ impl App {
 
         // --- Viewport culling ---
         let viewport_h = self.conversation_viewport_height();
-        let mut buffer_lines = 50usize;
+        let mut buffer_lines = 100usize;
         if self.state.task_progress.is_some()
             || !self.state.active_tools.is_empty()
             || !self.state.active_subagents.is_empty()
