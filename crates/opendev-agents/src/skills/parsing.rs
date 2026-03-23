@@ -43,7 +43,7 @@ pub(super) fn parse_frontmatter_file(path: &Path) -> Option<SkillMetadata> {
 /// ---
 /// ```
 pub(super) fn parse_frontmatter_str(content: &str) -> Option<SkillMetadata> {
-    let re = Regex::new(r"(?s)^---\n(.*?)\n---").ok()?;
+    let re = Regex::new(r"(?s)^---\r?\n(.*?)\r?\n---").ok()?;
     let caps = re.captures(content)?;
     let frontmatter = caps.get(1)?.as_str();
 
