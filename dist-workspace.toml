@@ -17,8 +17,5 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
-
-# Homebrew tap repository for publishing formulas
-[dist.homebrew]
-tap = "opendev-to/homebrew-tap"
-publish = true
+# Allow custom jobs in release.yml without cargo-dist rejecting them
+allow-dirty = ["ci"]

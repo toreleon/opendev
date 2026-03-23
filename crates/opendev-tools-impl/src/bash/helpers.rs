@@ -168,19 +168,27 @@ pub(super) fn prepare_command(command: &str) -> String {
 // ---------------------------------------------------------------------------
 
 pub(super) fn kill_process_group(pgid: u32) {
-    unsafe {
-        // Graceful shutdown: SIGTERM first, then SIGKILL after a brief grace period.
-        // This gives processes a chance to clean up (flush buffers, remove temp files, etc.).
-        libc::kill(-(pgid as i32), libc::SIGTERM);
-    }
-    // Give the process group 500ms to exit gracefully before force-killing.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    unsafe {
-        // Check if still alive, then SIGKILL.
-        let alive = libc::kill(-(pgid as i32), 0) == 0;
-        if alive {
-            libc::kill(-(pgid as i32), libc::SIGKILL);
+    #[cfg(unix)]
+    {
+        unsafe {
+            libc::kill(-(pgid as i32), libc::SIGTERM);
         }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        unsafe {
+            let alive = libc::kill(-(pgid as i32), 0) == 0;
+            if alive {
+                libc::kill(-(pgid as i32), libc::SIGKILL);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, kill the process tree via `taskkill /F /T /PID`
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pgid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 

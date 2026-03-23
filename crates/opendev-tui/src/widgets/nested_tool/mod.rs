@@ -175,7 +175,10 @@ impl Widget for NestedToolWidget<'_> {
                         Style::default().fg(style_tokens::BLUE_BRIGHT),
                     ),
                     Span::styled(verb, Style::default().fg(style_tokens::SUBTLE)),
-                    Span::styled(format!("({arg})"), Style::default().fg(style_tokens::SUBTLE)),
+                    Span::styled(
+                        format!("({arg})"),
+                        Style::default().fg(style_tokens::SUBTLE),
+                    ),
                     Span::styled(
                         format!(" ({tool_elapsed}s)"),
                         Style::default().fg(style_tokens::SUBTLE),

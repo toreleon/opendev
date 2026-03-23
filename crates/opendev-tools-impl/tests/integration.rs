@@ -376,7 +376,10 @@ async fn search_invalid_regex_becomes_fixed_string() {
     let args = make_args(&[("pattern", serde_json::json!("[unclosed"))]);
 
     let result = tool.execute(args, &ctx).await;
-    assert!(result.success, "invalid regex should auto-promote to fixed-string search");
+    assert!(
+        result.success,
+        "invalid regex should auto-promote to fixed-string search"
+    );
 }
 
 // ========================================================================

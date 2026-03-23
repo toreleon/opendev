@@ -66,21 +66,21 @@ fn play_platform_sound() -> Result<(), String> {
 
         for player in &players {
             let which = std::process::Command::new("which").arg(player).output();
-            if let Ok(output) = which {
-                if output.status.success() {
-                    for sound in &sounds {
-                        if std::path::Path::new(sound).exists() {
-                            let mut cmd = std::process::Command::new(player);
-                            if *player == "cvlc" {
-                                cmd.arg("--play-and-exit");
-                            }
-                            cmd.arg(sound)
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn()
-                                .map_err(|e| e.to_string())?;
-                            return Ok(());
+            if let Ok(output) = which
+                && output.status.success()
+            {
+                for sound in &sounds {
+                    if std::path::Path::new(sound).exists() {
+                        let mut cmd = std::process::Command::new(player);
+                        if *player == "cvlc" {
+                            cmd.arg("--play-and-exit");
                         }
+                        cmd.arg(sound)
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn()
+                            .map_err(|e| e.to_string())?;
+                        return Ok(());
                     }
                 }
             }
@@ -88,7 +88,7 @@ fn play_platform_sound() -> Result<(), String> {
 
         // Fallback: terminal bell
         print!("\x07");
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]
@@ -101,7 +101,7 @@ fn play_platform_sound() -> Result<(), String> {
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| e.to_string())?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

@@ -144,7 +144,10 @@ impl<'a> ConversationWidget<'a> {
                                 .fg(style_tokens::PRIMARY)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("({arg})"), Style::default().fg(style_tokens::SUBTLE)),
+                        Span::styled(
+                            format!("({arg})"),
+                            Style::default().fg(style_tokens::SUBTLE),
+                        ),
                         Span::styled(
                             format!(" ({}s)", tool.elapsed_secs),
                             Style::default().fg(style_tokens::GREY),
