@@ -267,7 +267,7 @@ impl App {
                 .state
                 .active_subagents
                 .iter()
-                .filter(|s| s.backgrounded && !s.finished)
+                .filter(|s| s.backgrounded)
                 .filter_map(|s| self.state.bg_subagent_map.get(&s.subagent_id))
                 .cloned()
                 .collect();

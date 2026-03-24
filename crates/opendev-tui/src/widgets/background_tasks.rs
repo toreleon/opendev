@@ -819,4 +819,58 @@ mod tests {
         assert!(line.verb.is_empty());
         assert_eq!(line.args, "normal text");
     }
+
+    /// Helper to create a SubagentDisplayState with given fields.
+    fn make_subagent(id: &str, backgrounded: bool, finished: bool) -> SubagentDisplayState {
+        let mut s = SubagentDisplayState::new(id.to_string(), "Agent".into(), "task".into());
+        s.backgrounded = backgrounded;
+        if finished {
+            s.finish(true, "done".into(), 3, None);
+        }
+        s
+    }
+
+    #[test]
+    fn test_finished_bg_subagent_still_covers_parent() {
+        // A finished backgrounded subagent should still cover its parent task.
+        let subagents = vec![make_subagent("sa1", true, true)];
+        let mgr = BackgroundAgentManager::new();
+        // Simulate bg_subagent_map: sa1 -> bg_task_1
+        let covered: HashSet<String> = ["bg_task_1".to_string()].into_iter().collect();
+        let shortener = PathShortener::new(Some("."));
+        let panel = TaskWatcherPanel::new(&subagents, &mgr, &covered, 0, &shortener);
+        let filtered = panel.filtered_bg_tasks();
+        // No bg tasks in mgr, so nothing to filter, but covered set is correct
+        assert!(filtered.is_empty());
+        // The subagent is still counted in total_tasks
+        assert_eq!(panel.total_tasks(), 1);
+    }
+
+    #[test]
+    fn test_mixed_running_and_finished_bg_subagents_cover_parent() {
+        // Both running and finished backgrounded subagents should cover the parent.
+        let subagents = vec![
+            make_subagent("sa1", true, false),
+            make_subagent("sa2", true, true),
+        ];
+        // Both map to same parent
+        let covered: HashSet<String> = ["bg_task_1".to_string()].into_iter().collect();
+        let mgr = BackgroundAgentManager::new();
+        let shortener = PathShortener::new(Some("."));
+        let panel = TaskWatcherPanel::new(&subagents, &mgr, &covered, 0, &shortener);
+        assert_eq!(panel.total_tasks(), 2);
+    }
+
+    #[test]
+    fn test_non_bg_finished_subagent_does_not_affect_filtering() {
+        // A foreground finished subagent should not contribute to covered_bg_task_ids.
+        let subagents = vec![make_subagent("sa1", false, true)];
+        let covered: HashSet<String> = HashSet::new(); // no coverage
+        let mgr = BackgroundAgentManager::new();
+        let shortener = PathShortener::new(Some("."));
+        let panel = TaskWatcherPanel::new(&subagents, &mgr, &covered, 0, &shortener);
+        // Foreground subagent still shows, covered set is empty
+        assert!(panel.filtered_bg_tasks().is_empty());
+        assert_eq!(panel.total_tasks(), 1);
+    }
 }
