@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use super::App;
 
 impl App {
-    pub(super) fn accelerated_scroll(&mut self, up: bool) -> u16 {
+    pub(super) fn accelerated_scroll(&mut self, up: bool) -> u32 {
         let now = Instant::now();
         let same_direction = self.state.scroll_last_direction == Some(up);
         let within_window = self
@@ -59,36 +59,14 @@ impl App {
             self.state.spinner.tick();
         }
 
-        // Todo panel lifecycle: auto-collapse → auto-hide after all done
+        // Advance todo spinner (for collapsed mode) — stop when all complete
         if !self.state.todo_items.is_empty() {
             let all_done = self
                 .state
                 .todo_items
                 .iter()
                 .all(|i| i.status == crate::widgets::TodoDisplayStatus::Completed);
-
-            if all_done {
-                if self.state.todo_all_done_at.is_none() {
-                    // Grace just started — collapse immediately, show "All tasks complete"
-                    self.state.todo_all_done_at = Some(Instant::now());
-                    self.state.todo_expanded = false;
-                    self.state.dirty = true;
-                } else if self
-                    .state
-                    .todo_all_done_at
-                    .is_some_and(|t| t.elapsed() > Duration::from_secs(5))
-                {
-                    // Grace expired — clear items (hides panel)
-                    self.state.todo_items.clear();
-                    self.state.todo_all_done_at = None;
-                    self.state.plan_name = None;
-                    self.state.force_clear = true;
-                    self.state.dirty = true;
-                }
-                // Don't advance spinner when all done
-            } else {
-                // Items still incomplete — reset grace, advance spinner
-                self.state.todo_all_done_at = None;
+            if !all_done {
                 self.state.todo_spinner_tick = self.state.todo_spinner_tick.wrapping_add(1);
             }
         }

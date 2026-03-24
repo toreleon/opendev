@@ -86,6 +86,7 @@ impl App {
             self.state.cached_lines.clear();
             self.state.per_message_hashes.clear();
             self.state.per_message_line_counts.clear();
+            self.state.per_message_culled.clear();
             self.state.markdown_cache.clear();
         }
 
@@ -98,7 +99,7 @@ impl App {
             .collect();
 
         // Find the first message index where the hash differs
-        let first_dirty = {
+        let mut first_dirty = {
             let old_len = self.state.per_message_hashes.len();
             if old_len > num_messages {
                 0 // Messages were removed -- full rebuild
@@ -117,37 +118,6 @@ impl App {
                 dirty_idx
             }
         };
-
-        // Nothing changed
-        if first_dirty >= num_messages && self.state.per_message_hashes.len() == num_messages {
-            return;
-        }
-
-        // If the first dirty message attaches to its predecessor, re-render that
-        // predecessor too so its trailing blank line can be suppressed.
-        let first_dirty = if first_dirty > 0
-            && self
-                .state
-                .messages
-                .get(first_dirty)
-                .and_then(|m| m.role.style())
-                .is_some_and(|s| s.attach_to_previous)
-        {
-            first_dirty - 1
-        } else {
-            first_dirty
-        };
-
-        // Truncate to the point before first_dirty
-        let lines_to_keep: usize = self
-            .state
-            .per_message_line_counts
-            .iter()
-            .take(first_dirty)
-            .sum();
-        self.state.cached_lines.truncate(lines_to_keep);
-        self.state.per_message_hashes.truncate(first_dirty);
-        self.state.per_message_line_counts.truncate(first_dirty);
 
         // --- Viewport culling ---
         let viewport_h = self.conversation_viewport_height();
@@ -199,6 +169,57 @@ impl App {
             })
             .collect();
 
+        // Detect culling state changes (messages transitioning visible <-> culled).
+        // When the user scrolls, previously-culled messages may enter the viewport
+        // and need to be re-rendered from their blank placeholders.
+        if self.state.per_message_culled.len() == num_messages {
+            for (i, (new_vis, old_vis)) in msg_visible
+                .iter()
+                .zip(self.state.per_message_culled.iter())
+                .enumerate()
+            {
+                if new_vis != old_vis {
+                    first_dirty = first_dirty.min(i);
+                    break;
+                }
+            }
+        } else if !self.state.per_message_culled.is_empty() {
+            // Length mismatch (messages added/removed) — already handled by hash check
+            first_dirty = first_dirty.min(self.state.per_message_culled.len());
+        }
+
+        // Nothing changed (content hashes match AND culling state unchanged)
+        if first_dirty >= num_messages && self.state.per_message_hashes.len() == num_messages {
+            self.state.per_message_culled = msg_visible;
+            return;
+        }
+
+        // If the first dirty message attaches to its predecessor, re-render that
+        // predecessor too so its trailing blank line can be suppressed.
+        let first_dirty = if first_dirty > 0
+            && self
+                .state
+                .messages
+                .get(first_dirty)
+                .and_then(|m| m.role.style())
+                .is_some_and(|s| s.attach_to_previous)
+        {
+            first_dirty - 1
+        } else {
+            first_dirty
+        };
+
+        // Truncate to the point before first_dirty
+        let lines_to_keep: usize = self
+            .state
+            .per_message_line_counts
+            .iter()
+            .take(first_dirty)
+            .sum();
+        self.state.cached_lines.truncate(lines_to_keep);
+        self.state.per_message_hashes.truncate(first_dirty);
+        self.state.per_message_line_counts.truncate(first_dirty);
+
         // Re-render only messages from first_dirty onward
         for msg_idx in first_dirty..num_messages {
             let msg = &self.state.messages[msg_idx];
@@ -225,6 +246,8 @@ impl App {
             self.state.per_message_hashes.push(new_hashes[msg_idx]);
             self.state.per_message_line_counts.push(lines_produced);
         }
+
+        self.state.per_message_culled = msg_visible;
     }
 
     /// Render a single `DisplayMessage` into styled lines, appending to `lines`.

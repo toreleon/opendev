@@ -44,7 +44,7 @@ use tool_format::{format_nested_tool_call, format_tool_call};
 /// Widget that renders the conversation log.
 pub struct ConversationWidget<'a> {
     messages: &'a [DisplayMessage],
-    scroll_offset: u16,
+    scroll_offset: u32,
     version: &'a str,
     working_dir: &'a str,
     mode: &'a str,
@@ -67,7 +67,7 @@ pub struct ConversationWidget<'a> {
 }
 
 impl<'a> ConversationWidget<'a> {
-    pub fn new(messages: &'a [DisplayMessage], scroll_offset: u16) -> Self {
+    pub fn new(messages: &'a [DisplayMessage], scroll_offset: u32) -> Self {
         Self {
             messages,
             scroll_offset,
@@ -482,7 +482,7 @@ impl Widget for ConversationWidget<'_> {
         let actual_scroll = max_scroll.saturating_sub(clamped);
 
         paragraph
-            .scroll((actual_scroll as u16, 0))
+            .scroll((actual_scroll.min(u16::MAX as usize) as u16, 0))
             .render(content_area, buf);
 
         // Extend diff background colors to fill entire row width.

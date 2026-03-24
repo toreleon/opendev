@@ -239,10 +239,14 @@ impl App {
 
             // Only render when state has changed
             if self.state.dirty {
-                // Rebuild cached conversation lines if message generation changed
-                if self.state.lines_generation != self.state.message_generation {
+                // Rebuild cached conversation lines if messages changed or scroll
+                // moved (scroll affects viewport culling boundaries).
+                if self.state.lines_generation != self.state.message_generation
+                    || self.state.cached_scroll_offset != self.state.scroll_offset
+                {
                     self.rebuild_cached_lines();
                     self.state.lines_generation = self.state.message_generation;
+                    self.state.cached_scroll_offset = self.state.scroll_offset;
                 }
 
                 terminal.draw(|frame| self.render(frame))?;

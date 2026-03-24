@@ -57,8 +57,8 @@ pub struct AppState {
     pub input_cursor: usize,
     /// Active tool executions.
     pub active_tools: Vec<ToolExecution>,
-    /// Scroll offset for the conversation view.
-    pub scroll_offset: u16,
+    /// Scroll offset for the conversation view (lines from bottom).
+    pub scroll_offset: u32,
     /// Whether the user has scrolled up (disables auto-scroll).
     pub user_scrolled: bool,
     /// Autocomplete engine for `/` commands and `@` file mentions.
@@ -109,6 +109,11 @@ pub struct AppState {
     pub markdown_cache: HashMap<u64, Vec<ratatui::text::Line<'static>>>,
     /// Terminal width at which cached_lines were last built (for resize invalidation).
     pub cached_width: u16,
+    /// Per-message culling state from the last cache rebuild.
+    /// Used to detect when scrolling changes which messages are visible vs culled.
+    pub per_message_culled: Vec<bool>,
+    /// Scroll offset at the time cached_lines were last built.
+    pub cached_scroll_offset: u32,
     /// Scroll acceleration: last scroll direction (true = up, false = down).
     pub scroll_last_direction: Option<bool>,
     /// Scroll acceleration: timestamp of the last scroll key press.
@@ -223,6 +228,8 @@ impl Default for AppState {
             per_message_line_counts: Vec::new(),
             markdown_cache: HashMap::new(),
             cached_width: 80,
+            per_message_culled: Vec::new(),
+            cached_scroll_offset: 0,
             scroll_last_direction: None,
             scroll_last_time: None,
             scroll_accel_level: 0,
