@@ -27,8 +27,8 @@ Create a structured task list at the START of a complex task. This helps track p
 
 ## Usage notes
 
-- Write 4-7 todo items that break down the work into steps
-- REPLACES the entire todo list — call once at the beginning, then use update_todo to change status as you work
+- Write 4-8 todo items maximum. Combine related steps into a single item rather than listing every sub-step. Excess items will be truncated to 10.
+- REPLACES the entire todo list — call EXACTLY ONCE, never call it twice. Then use update_todo to change status as you work
 - Exactly ONE task should be in_progress at any time. Mark it in_progress BEFORE beginning work on it
 - ONLY mark a task as completed when you have FULLY accomplished it. Never mark completed if tests are failing, implementation is partial, or errors are unresolved
 - After completing a task, check list_todos for the next available task
