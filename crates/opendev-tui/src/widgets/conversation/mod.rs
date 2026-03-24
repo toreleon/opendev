@@ -166,12 +166,12 @@ impl<'a> ConversationWidget<'a> {
     /// Render plan content in a bordered panel with markdown formatting.
     fn render_plan_panel(content: &str, lines: &mut Vec<Line<'_>>) {
         let border_style = Style::default().fg(style_tokens::CYAN);
-        let border_w = 40;
-        let h_bar: String = style_tokens::BOX_H.repeat(border_w);
-
-        // Top border: ╭── Plan ──────...
+        let border_w: usize = 32;
+        let inner_w = border_w.saturating_sub(1);
         let label = " Plan ";
-        let top_after = border_w.saturating_sub(2 + label.len());
+        let top_after = border_w.saturating_sub(3 + label.len() + 1);
+
+        // Top border: ╭── Plan ──────────────────╮
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{}{}", style_tokens::BOX_TL, style_tokens::BOX_H.repeat(2)),
@@ -181,33 +181,55 @@ impl<'a> ConversationWidget<'a> {
                 label.to_string(),
                 border_style.add_modifier(ratatui::style::Modifier::BOLD),
             ),
-            Span::styled(style_tokens::BOX_H.repeat(top_after), border_style),
+            Span::styled(
+                format!(
+                    "{}{}",
+                    style_tokens::BOX_H.repeat(top_after),
+                    style_tokens::BOX_TR
+                ),
+                border_style,
+            ),
         ]));
 
         // Top padding
-        lines.push(Line::from(vec![Span::styled(
-            style_tokens::BOX_V.to_string(),
-            border_style,
-        )]));
+        lines.push(Line::from(vec![
+            Span::styled(style_tokens::BOX_V.to_string(), border_style),
+            Span::raw(" ".repeat(inner_w.saturating_sub(1))),
+            Span::styled(style_tokens::BOX_V.to_string(), border_style),
+        ]));
 
-        // Render content through markdown
+        // Render content through markdown with left border prefix
         let md_lines = MarkdownRenderer::render(content);
         let prefix = format!("{}  ", style_tokens::BOX_V);
         for md_line in md_lines {
             let mut spans = vec![Span::styled(prefix.clone(), border_style)];
             spans.extend(md_line.spans);
+            let line = Line::from(spans);
+            let line_w = line.width();
+            let mut spans = line.spans;
+            let pad = border_w.saturating_sub(line_w);
+            if pad > 0 {
+                spans.push(Span::raw(" ".repeat(pad)));
+            }
+            spans.push(Span::styled(style_tokens::BOX_V.to_string(), border_style));
             lines.push(Line::from(spans));
         }
 
         // Bottom padding
-        lines.push(Line::from(vec![Span::styled(
-            style_tokens::BOX_V.to_string(),
-            border_style,
-        )]));
+        lines.push(Line::from(vec![
+            Span::styled(style_tokens::BOX_V.to_string(), border_style),
+            Span::raw(" ".repeat(inner_w.saturating_sub(1))),
+            Span::styled(style_tokens::BOX_V.to_string(), border_style),
+        ]));
 
-        // Bottom border: ╰──────────────...
+        // Bottom border: ╰──────────────────────────╯
         lines.push(Line::from(vec![Span::styled(
-            format!("{}{}", style_tokens::BOX_BL, h_bar),
+            format!(
+                "{}{}{}",
+                style_tokens::BOX_BL,
+                style_tokens::BOX_H.repeat(border_w.saturating_sub(2)),
+                style_tokens::BOX_BR
+            ),
             border_style,
         )]));
     }

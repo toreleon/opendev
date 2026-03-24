@@ -403,11 +403,12 @@ impl App {
             }
             DisplayRole::Plan => {
                 let border_style = Style::default().fg(style_tokens::CYAN);
-                let border_w: usize = 40;
+                let border_w: usize = if max_w > 0 { max_w } else { 32 };
+                let inner_w = border_w.saturating_sub(1); // leave room for right │
                 let label = " Plan ";
-                let top_after = border_w.saturating_sub(2 + label.len());
+                let top_after = border_w.saturating_sub(3 + label.len() + 1); // 3 = ╭── prefix, +1 for ╮ suffix
 
-                // Top border
+                // Top border: ╭── Plan ──────────────────╮
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("{}{}", style_tokens::BOX_TL, style_tokens::BOX_H.repeat(2)),
@@ -417,16 +418,24 @@ impl App {
                         label.to_string(),
                         border_style.add_modifier(ratatui::style::Modifier::BOLD),
                     ),
-                    Span::styled(style_tokens::BOX_H.repeat(top_after), border_style),
+                    Span::styled(
+                        format!(
+                            "{}{}",
+                            style_tokens::BOX_H.repeat(top_after),
+                            style_tokens::BOX_TR
+                        ),
+                        border_style,
+                    ),
                 ]));
 
                 // Top padding
-                lines.push(Line::from(vec![Span::styled(
-                    style_tokens::BOX_V.to_string(),
-                    border_style,
-                )]));
+                lines.push(Line::from(vec![
+                    Span::styled(style_tokens::BOX_V.to_string(), border_style),
+                    Span::raw(" ".repeat(inner_w.saturating_sub(1))),
+                    Span::styled(style_tokens::BOX_V.to_string(), border_style),
+                ]));
 
-                // Markdown content with border prefix
+                // Markdown content with left border prefix
                 let cache_key = markdown_cache_key(&msg.role, &content);
                 let md_lines = if let Some(cached) = markdown_cache.get(&cache_key) {
                     cached.clone()
@@ -440,10 +449,11 @@ impl App {
                 let prefix_span = vec![Span::styled(prefix_str.clone(), border_style)];
                 let cont_span = vec![Span::styled(prefix_str, border_style)];
 
-                if max_w > 0 {
-                    let wrapped = wrap_spans_to_lines(md_lines, prefix_span, cont_span, max_w);
-                    lines.extend(wrapped);
+                let wrap_width = if max_w > 0 { inner_w } else { 0 };
+                let content_lines = if wrap_width > 0 {
+                    wrap_spans_to_lines(md_lines, prefix_span, cont_span, wrap_width)
                 } else {
+                    let mut out = Vec::new();
                     for md_line in md_lines {
                         let mut spans = prefix_span.clone();
                         spans.extend(
@@ -452,22 +462,39 @@ impl App {
                                 .into_iter()
                                 .map(|s| Span::styled(s.content.to_string(), s.style)),
                         );
-                        lines.push(Line::from(spans));
+                        out.push(Line::from(spans));
                     }
+                    out
+                };
+
+                // Add right border to each content line
+                for mut line in content_lines {
+                    if border_w > 0 {
+                        let line_w = line.width();
+                        let pad = inner_w.saturating_sub(line_w);
+                        if pad > 0 {
+                            line.spans.push(Span::raw(" ".repeat(pad)));
+                        }
+                        line.spans
+                            .push(Span::styled(style_tokens::BOX_V.to_string(), border_style));
+                    }
+                    lines.push(line);
                 }
 
                 // Bottom padding
-                lines.push(Line::from(vec![Span::styled(
-                    style_tokens::BOX_V.to_string(),
-                    border_style,
-                )]));
+                lines.push(Line::from(vec![
+                    Span::styled(style_tokens::BOX_V.to_string(), border_style),
+                    Span::raw(" ".repeat(inner_w.saturating_sub(1))),
+                    Span::styled(style_tokens::BOX_V.to_string(), border_style),
+                ]));
 
-                // Bottom border
+                // Bottom border: ╰──────────────────────────╯
                 lines.push(Line::from(vec![Span::styled(
                     format!(
-                        "{}{}",
+                        "{}{}{}",
                         style_tokens::BOX_BL,
-                        style_tokens::BOX_H.repeat(border_w)
+                        style_tokens::BOX_H.repeat(border_w.saturating_sub(2)),
+                        style_tokens::BOX_BR
                     ),
                     border_style,
                 )]));
