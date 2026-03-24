@@ -74,6 +74,15 @@ impl<'a> IterationEmitter<'a> {
         }
     }
 
+    /// Emit reasoning block start (separator between interleaved blocks).
+    fn emit_reasoning_block_start(&self) {
+        if !self.suppress_content
+            && let Some(cb) = self.cb
+        {
+            cb.on_reasoning_block_start();
+        }
+    }
+
     /// Emit text if streaming didn't deliver it (non-streaming fallback).
     fn emit_text_if_not_streamed(&self, content: &str) {
         if !self.suppress_content
@@ -364,6 +373,7 @@ impl ReactLoop {
                     match event {
                         StreamEvent::TextDelta(text) => emitter.emit_text(text),
                         StreamEvent::ReasoningDelta(text) => emitter.emit_reasoning(text),
+                        StreamEvent::ReasoningBlockStart => emitter.emit_reasoning_block_start(),
                         _ => {}
                     }
                 });

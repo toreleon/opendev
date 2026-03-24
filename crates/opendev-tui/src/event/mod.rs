@@ -138,6 +138,8 @@ pub enum AppEvent {
     // -- Reasoning events --
     /// Native reasoning content from LLM response (inline thinking).
     ReasoningContent(String),
+    /// A new reasoning/thinking block started (separator between interleaved blocks).
+    ReasoningBlockStart,
 
     // -- Task progress events --
     /// Agent started working on a task (shows progress bar).

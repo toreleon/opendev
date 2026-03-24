@@ -57,6 +57,9 @@ impl RecordedEvent {
                 "ReasoningContent".to_string(),
                 serde_json::json!({"content": s}),
             ),
+            AppEvent::ReasoningBlockStart => {
+                ("ReasoningBlockStart".to_string(), serde_json::Value::Null)
+            }
             AppEvent::AgentMessage(msg) => (
                 "AgentMessage".to_string(),
                 serde_json::to_value(msg).unwrap_or(serde_json::Value::Null),

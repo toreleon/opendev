@@ -69,6 +69,10 @@ impl AgentEventCallback for TuiEventCallback {
             .send(AppEvent::ReasoningContent(content.to_string()));
     }
 
+    fn on_reasoning_block_start(&self) {
+        let _ = self.tx.send(AppEvent::ReasoningBlockStart);
+    }
+
     fn on_context_usage(&self, pct: f64) {
         let _ = self.tx.send(AppEvent::ContextUsage(pct));
     }

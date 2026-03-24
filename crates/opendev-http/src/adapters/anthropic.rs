@@ -634,7 +634,16 @@ impl super::base::ProviderAdapter for AnthropicAdapter {
             "message_stop" => None,
             "message_start" => None,
             "message_delta" => None,
-            "content_block_start" => None,
+            "content_block_start" => {
+                let block_type = data
+                    .get("content_block")
+                    .and_then(|b| b.get("type"))
+                    .and_then(|t| t.as_str());
+                if block_type == Some("thinking") {
+                    return Some(StreamEvent::ReasoningBlockStart);
+                }
+                None
+            }
             "content_block_stop" => None,
             "ping" => None,
             "error" => {

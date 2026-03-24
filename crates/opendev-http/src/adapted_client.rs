@@ -310,6 +310,12 @@ impl AdaptedClient {
                                 StreamEvent::TextDelta(text) => {
                                     accumulated_text.push_str(text);
                                 }
+                                StreamEvent::ReasoningBlockStart => {
+                                    // Insert separator between multiple thinking blocks
+                                    if !accumulated_reasoning.is_empty() {
+                                        accumulated_reasoning.push_str("\n\n");
+                                    }
+                                }
                                 StreamEvent::ReasoningDelta(text) => {
                                     accumulated_reasoning.push_str(text);
                                 }

@@ -235,6 +235,17 @@ impl App {
             }
 
             // Reasoning events
+            AppEvent::ReasoningBlockStart => {
+                // Insert separator between multiple thinking blocks
+                if let Some(last) = self.state.messages.last_mut()
+                    && last.role == DisplayRole::Reasoning
+                    && !last.content.is_empty()
+                {
+                    last.content.push_str("\n\n");
+                    self.state.dirty = true;
+                    self.state.message_generation += 1;
+                }
+            }
             AppEvent::ReasoningContent(content) => {
                 // Append to previous reasoning message in this turn (streaming sends deltas)
                 if let Some(last) = self.state.messages.last_mut()

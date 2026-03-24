@@ -242,6 +242,8 @@ pub trait AgentEventCallback: Send + Sync {
     fn on_agent_chunk(&self, text: &str);
     /// Native reasoning content from the LLM response (inline thinking).
     fn on_reasoning(&self, _content: &str) {}
+    /// A new reasoning/thinking block started (separator between interleaved blocks).
+    fn on_reasoning_block_start(&self) {}
     /// A tool produced its final result with output content.
     fn on_tool_result(&self, _tool_id: &str, _tool_name: &str, _output: &str, _success: bool) {}
     /// Context window usage percentage updated (0.0–100.0).

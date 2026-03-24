@@ -408,6 +408,9 @@ impl super::base::ProviderAdapter for OpenAiAdapter {
                 let delta = data.get("delta")?.as_str()?;
                 Some(StreamEvent::TextDelta(delta.to_string()))
             }
+            "response.reasoning_summary_part.added" => {
+                Some(StreamEvent::ReasoningBlockStart)
+            }
             "response.reasoning_summary_text.delta" => {
                 let delta = data.get("delta")?.as_str()?;
                 Some(StreamEvent::ReasoningDelta(delta.to_string()))

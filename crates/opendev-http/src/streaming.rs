@@ -12,6 +12,9 @@ pub enum StreamEvent {
     TextDelta(String),
     /// A chunk of reasoning/thinking content.
     ReasoningDelta(String),
+    /// A new reasoning/thinking block is starting (used to insert separators
+    /// between multiple interleaved thinking blocks in a single response).
+    ReasoningBlockStart,
     /// The complete response is available (streaming finished).
     /// Contains the full response body for final processing.
     Done(Value),
