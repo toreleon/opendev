@@ -262,6 +262,11 @@ impl ReactLoop {
         let mut all_todos_complete_nudged = false;
         let mut completion_nudge_sent = false;
         let mut consecutive_reads: usize = 0;
+        // Track whether write_todos was called this session and whether
+        // substantive (non-read) work happened after it. This lets us skip
+        // the incomplete-todos nudge when the user just asked to *create* todos.
+        let mut wrote_todos_this_session = false;
+        let mut did_substantive_work_after_todos = false;
 
         loop {
             iteration += 1;
@@ -560,8 +565,14 @@ impl ReactLoop {
                     }
                     consecutive_truncations = 0;
 
-                    // Block completion when there are incomplete todos
-                    if let Some(mgr) = todo_manager
+                    // Block completion when there are incomplete todos.
+                    // Skip if write_todos was called this session and no substantive
+                    // (non-read) work happened after — creating the list IS the task.
+                    let todo_creation_only =
+                        wrote_todos_this_session && !did_substantive_work_after_todos;
+
+                    if !todo_creation_only
+                        && let Some(mgr) = todo_manager
                         && let Ok(mgr) = mgr.lock()
                         && mgr.has_incomplete_todos()
                         && todo_nudge_count < self.config.max_todo_nudges
@@ -878,8 +889,13 @@ impl ReactLoop {
                     let mut any_tool_failed = false;
                     for tc in &tool_calls {
                         // Check for task_complete — block if todos are incomplete
+                        // (but allow completion if we only created todos without
+                        // substantive implementation work after)
                         if Self::is_task_complete(tc) {
-                            if let Some(mgr) = todo_manager
+                            let todo_creation_only =
+                                wrote_todos_this_session && !did_substantive_work_after_todos;
+                            if !todo_creation_only
+                                && let Some(mgr) = todo_manager
                                 && let Ok(mgr) = mgr.lock()
                                 && mgr.has_incomplete_todos()
                                 && todo_nudge_count < self.config.max_todo_nudges
@@ -1475,6 +1491,30 @@ impl ReactLoop {
                                 iter_start.elapsed().as_millis() as u64;
                             self.push_metrics(iter_metrics);
                             return Ok(AgentResult::backgrounded(messages.clone()));
+                        }
+                    }
+
+                    // Track todo-creation intent for nudge guard decisions.
+                    // If any tool in this batch is write_todos or clear_todos,
+                    // mark that we wrote todos and reset the substantive-work flag.
+                    // If any tool is NOT a read-only or todo-management tool,
+                    // mark that substantive work happened after todo creation.
+                    for tc in &tool_calls {
+                        let name = tc
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("");
+                        if name == "write_todos" || name == "clear_todos" {
+                            wrote_todos_this_session = true;
+                            did_substantive_work_after_todos = false;
+                        } else if wrote_todos_this_session
+                            && !READ_OPS.contains(&name)
+                            && name != "update_todo"
+                            && name != "complete_todo"
+                            && name != "list_todos"
+                        {
+                            did_substantive_work_after_todos = true;
                         }
                     }
 
