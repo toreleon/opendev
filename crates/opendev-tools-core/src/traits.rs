@@ -321,6 +321,22 @@ impl Default for ToolContext {
     }
 }
 
+/// Metadata describing how a tool should appear in the TUI.
+///
+/// Tools return this from `display_meta()` so the display registry can
+/// auto-discover formatting without manual static entries.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolDisplayMeta {
+    /// Display verb shown in TUI, e.g. "Read", "Bash".
+    pub verb: &'static str,
+    /// Fallback noun when no arg is available, e.g. "file", "command".
+    pub label: &'static str,
+    /// Category name (matches `ToolCategory` variant names).
+    pub category: &'static str,
+    /// Ordered keys to try when extracting the primary arg for display.
+    pub primary_arg_keys: &'static [&'static str],
+}
+
 /// Base trait for all tools.
 ///
 /// Tools implement this trait to provide:
@@ -359,6 +375,14 @@ pub trait BaseTool: Send + Sync + std::fmt::Debug {
     /// from the JSON Schema validation.
     fn format_validation_error(&self, errors: &[ValidationError]) -> Option<String> {
         let _ = errors;
+        None
+    }
+
+    /// Return TUI display metadata for this tool.
+    ///
+    /// Tools that override this allow the display registry to auto-discover
+    /// their formatting. Returns `None` by default (falls back to static registry).
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
         None
     }
 }

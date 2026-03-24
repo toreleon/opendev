@@ -50,8 +50,6 @@ fn tool_groups() -> HashMap<&'static str, HashSet<&'static str>> {
         ]),
     );
 
-    groups.insert("group:git", HashSet::from(["git"]));
-
     groups.insert(
         "group:session",
         HashSet::from([
@@ -98,13 +96,7 @@ fn profiles() -> HashMap<&'static str, Vec<&'static str>> {
     p.insert("minimal", vec!["group:read", "group:meta"]);
     p.insert(
         "review",
-        vec![
-            "group:read",
-            "group:meta",
-            "group:web",
-            "group:git",
-            "group:session",
-        ],
+        vec!["group:read", "group:meta", "group:web", "group:session"],
     );
     p.insert(
         "coding",
@@ -113,7 +105,6 @@ fn profiles() -> HashMap<&'static str, Vec<&'static str>> {
             "group:write",
             "group:process",
             "group:web",
-            "group:git",
             "group:meta",
             "group:session",
             "group:memory",
@@ -126,7 +117,6 @@ fn profiles() -> HashMap<&'static str, Vec<&'static str>> {
             "group:write",
             "group:process",
             "group:web",
-            "group:git",
             "group:session",
             "group:memory",
             "group:meta",
@@ -269,7 +259,6 @@ mod tests {
         assert!(allowed.contains("read_file"));
         assert!(allowed.contains("write_file"));
         assert!(allowed.contains("run_command"));
-        assert!(allowed.contains("git"));
         assert!(!allowed.contains("send_message")); // not in coding
     }
 

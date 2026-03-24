@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use opendev_tools_core::{BaseTool, ToolContext};
-use opendev_tools_impl::{BashTool, FileEditTool, FileReadTool, FileWriteTool, GitTool, GrepTool};
+use opendev_tools_impl::{BashTool, FileEditTool, FileReadTool, FileWriteTool, GrepTool};
 use tempfile::TempDir;
 
 fn make_args(pairs: &[(&str, serde_json::Value)]) -> HashMap<String, serde_json::Value> {
@@ -386,129 +386,24 @@ async fn search_invalid_regex_becomes_fixed_string() {
 // Git tool integration tests
 // ========================================================================
 
-/// Verify git init, add, commit, log workflow in a temp directory.
-#[tokio::test]
-async fn git_init_commit_and_log() {
-    let tmp = TempDir::new().unwrap();
-
-    // Initialize a git repo using BashTool (since GitTool doesn't have init)
-    let bash = BashTool::new();
-    let ctx = ToolContext::new(tmp.path());
-
-    let init_result = bash
-        .execute(
-            make_args(&[("command", serde_json::json!("git init && git config user.email 'test@test.com' && git config user.name 'Test'"))]),
-            &ctx,
-        )
-        .await;
-    assert!(init_result.success, "git init should succeed");
-
-    // Create a file and stage it
-    std::fs::write(tmp.path().join("hello.txt"), "hello world\n").unwrap();
-    let add_result = bash
-        .execute(
-            make_args(&[("command", serde_json::json!("git add hello.txt"))]),
-            &ctx,
-        )
-        .await;
-    assert!(add_result.success);
-
-    // Commit using GitTool
-    let git = GitTool;
-    let commit_args = make_args(&[
-        ("action", serde_json::json!("commit")),
-        ("message", serde_json::json!("Initial commit")),
-    ]);
-    let result = git.execute(commit_args, &ctx).await;
-    assert!(result.success, "commit should succeed: {:?}", result.error);
-
-    // Check log
-    let log_args = make_args(&[
-        ("action", serde_json::json!("log")),
-        ("limit", serde_json::json!(5)),
-    ]);
-    let result = git.execute(log_args, &ctx).await;
-    assert!(result.success);
-    let output = result.output.unwrap();
-    assert!(
-        output.contains("Initial commit"),
-        "log should show commit message"
-    );
-
-    // Check status (should be clean)
-    let status_args = make_args(&[("action", serde_json::json!("status"))]);
-    let result = git.execute(status_args, &ctx).await;
-    assert!(result.success);
-    let output = result.output.unwrap();
-    assert!(
-        output.contains("clean") || output.contains("Changes (0)"),
-        "repo should be clean after commit, got: {output}"
-    );
-}
-
-/// Verify git status in a non-repo directory fails gracefully.
-#[tokio::test]
-async fn git_status_non_repo_fails() {
-    let tmp = TempDir::new().unwrap();
-    let git = GitTool;
-    let ctx = ToolContext::new(tmp.path());
-    let args = make_args(&[("action", serde_json::json!("status"))]);
-
-    let result = git.execute(args, &ctx).await;
-    assert!(!result.success, "status in non-repo should fail");
-}
-
-/// Verify git diff on staged changes.
-#[tokio::test]
-async fn git_diff_staged_changes() {
-    let tmp = TempDir::new().unwrap();
-    let bash = BashTool::new();
-    let ctx = ToolContext::new(tmp.path());
-
-    // Init repo and make initial commit
-    bash.execute(
-        make_args(&[("command", serde_json::json!(
-            "git init && git config user.email 'test@test.com' && git config user.name 'Test' && echo initial > file.txt && git add . && git commit -m 'init'"
-        ))]),
-        &ctx,
-    ).await;
-
-    // Modify and stage
-    std::fs::write(tmp.path().join("file.txt"), "modified\n").unwrap();
-    bash.execute(
-        make_args(&[("command", serde_json::json!("git add file.txt"))]),
-        &ctx,
-    )
-    .await;
-
-    let git = GitTool;
-    let diff_args = make_args(&[
-        ("action", serde_json::json!("diff")),
-        ("staged", serde_json::json!(true)),
-    ]);
-    let result = git.execute(diff_args, &ctx).await;
-    assert!(result.success);
-    let output = result.output.unwrap();
-    assert!(
-        output.contains("modified"),
-        "diff should show staged changes"
-    );
-}
-
-/// Verify force push to protected branch is blocked.
-#[tokio::test]
-async fn git_force_push_to_main_blocked() {
-    let git = GitTool;
-    let ctx = ToolContext::new("/tmp");
-    let args = make_args(&[
-        ("action", serde_json::json!("push")),
-        ("branch", serde_json::json!("main")),
-        ("force", serde_json::json!(true)),
-    ]);
-
-    let result = git.execute(args, &ctx).await;
-    assert!(!result.success);
-    assert!(result.error.unwrap().contains("protected branch"));
+/// Verify git dangerous patterns are detected via BashTool's is_dangerous.
+#[test]
+fn git_force_push_detected_as_dangerous() {
+    use opendev_tools_impl::bash::is_dangerous_command;
+    assert!(is_dangerous_command("git push --force origin main"));
+    assert!(is_dangerous_command("git push -f origin main"));
+    assert!(is_dangerous_command("git reset --hard HEAD~1"));
+    assert!(is_dangerous_command("git clean -fd"));
+    assert!(is_dangerous_command("git checkout -- ."));
+    assert!(is_dangerous_command("git branch -D feature"));
+    // Safe git commands should not be flagged
+    assert!(!is_dangerous_command("git status"));
+    assert!(!is_dangerous_command("git log"));
+    assert!(!is_dangerous_command("git diff"));
+    assert!(!is_dangerous_command("git push origin main"));
+    assert!(!is_dangerous_command(
+        "git push --force-with-lease origin main"
+    ));
 }
 
 // ========================================================================
@@ -632,37 +527,4 @@ async fn file_list_shows_directory_contents() {
     assert!(output.contains("file1.rs"));
     assert!(output.contains("file2.txt"));
     assert!(output.contains("nested.rs"));
-}
-
-/// Verify git branch creation.
-#[tokio::test]
-async fn git_branch_creation() {
-    let tmp = TempDir::new().unwrap();
-    let bash = BashTool::new();
-    let ctx = ToolContext::new(tmp.path());
-
-    bash.execute(
-        make_args(&[("command", serde_json::json!(
-            "git init && git config user.email 'test@test.com' && git config user.name 'Test' && echo x > f.txt && git add . && git commit -m 'init'"
-        ))]),
-        &ctx,
-    ).await;
-
-    let git = GitTool;
-    let args = make_args(&[
-        ("action", serde_json::json!("branch")),
-        ("branch", serde_json::json!("feature-test")),
-    ]);
-    let result = git.execute(args, &ctx).await;
-    assert!(
-        result.success,
-        "branch creation should succeed: {:?}",
-        result.error
-    );
-
-    // List branches
-    let list_args = make_args(&[("action", serde_json::json!("branch"))]);
-    let result = git.execute(list_args, &ctx).await;
-    assert!(result.success);
-    assert!(result.output.unwrap().contains("feature-test"));
 }

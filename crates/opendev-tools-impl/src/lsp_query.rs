@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
+use opendev_tools_core::{BaseTool, ToolContext, ToolDisplayMeta, ToolResult};
 use opendev_tools_lsp::LspWrapper;
 
 /// Tool that queries language servers for code intelligence.
@@ -257,6 +257,15 @@ impl BaseTool for LspQueryTool {
                 action
             )),
         }
+    }
+
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
+        Some(ToolDisplayMeta {
+            verb: "LSP",
+            label: "query",
+            category: "Symbol",
+            primary_arg_keys: &["action", "file_path"],
+        })
     }
 }
 

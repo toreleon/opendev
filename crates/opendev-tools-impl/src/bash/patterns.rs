@@ -73,6 +73,13 @@ const DANGEROUS_REGEX_PATTERNS: &[&str] = &[
     r":\(\)\{.*:\|:&\s*\};:",
     r"mv\s+/",
     r">\s*/dev/sd[a-z]",
+    // Git destructive operations (--force but not --force-with-lease)
+    r"git\s+push\s+.*--force\b",
+    r"git\s+push\s+-f\b",
+    r"git\s+reset\s+--hard",
+    r"git\s+clean\s+-[a-zA-Z]*f",
+    r"git\s+checkout\s+--\s+\.",
+    r"git\s+branch\s+-D\b",
 ];
 
 // ---------------------------------------------------------------------------
@@ -170,7 +177,14 @@ static INTERACTIVE_COMPILED: LazyLock<CompiledPatterns> =
     LazyLock::new(|| CompiledPatterns::new(INTERACTIVE_PATTERNS));
 
 pub(super) fn is_dangerous(command: &str) -> bool {
-    DANGEROUS_COMPILED.matches(command)
+    if DANGEROUS_COMPILED.matches(command) {
+        // Allow `git push --force-with-lease` (safe force push)
+        if command.contains("--force-with-lease") && !command.contains("--force ") {
+            return false;
+        }
+        return true;
+    }
+    false
 }
 
 pub(super) fn is_server_command(command: &str) -> bool {

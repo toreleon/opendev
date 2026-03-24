@@ -69,7 +69,6 @@ fn default_rules() -> HashMap<String, TruncationRule> {
     rules.insert("list_files".into(), TruncationRule::head(10000));
     rules.insert("fetch_url".into(), TruncationRule::head(12000));
     rules.insert("web_search".into(), TruncationRule::head(10000));
-    rules.insert("git".into(), TruncationRule::head_tail(12000, 0.7));
     rules.insert("browser".into(), TruncationRule::head(5000));
     rules.insert("get_session_history".into(), TruncationRule::tail(15000));
     rules.insert("memory_search".into(), TruncationRule::head(10000));
@@ -458,17 +457,6 @@ mod tests {
         assert!(result.was_truncated);
         let output = result.output.unwrap();
         assert!(output.contains("strategy=tail"));
-    }
-
-    #[test]
-    fn test_truncation_head_tail_strategy() {
-        let sanitizer = ToolResultSanitizer::new();
-        let long_output = "x".repeat(15000);
-        let result = sanitizer.sanitize("git", true, Some(&long_output), None);
-        assert!(result.was_truncated);
-        let output = result.output.unwrap();
-        assert!(output.contains("strategy=head_tail"));
-        assert!(output.contains("[middle truncated]"));
     }
 
     #[test]

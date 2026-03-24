@@ -5,7 +5,6 @@
 //!
 //! - File operations: [`file_read`], [`file_write`], [`file_edit`], [`file_list`], [`file_search`]
 //! - Process execution: [`bash`]
-//! - Git operations: [`git`]
 //! - Web tools: [`web_fetch`], [`web_search`], [`web_screenshot`], [`browser`]
 //! - User interaction: [`ask_user`]
 //! - Memory tools: [`memory`]
@@ -40,7 +39,6 @@ pub mod file_read;
 pub mod file_search;
 pub mod file_write;
 pub mod formatter;
-pub mod git;
 pub mod insert_symbol;
 pub mod invoke_skill;
 pub mod list_todos;
@@ -80,7 +78,6 @@ pub use file_list::FileListTool;
 pub use file_read::FileReadTool;
 pub use file_search::{AstGrepTool, GrepTool};
 pub use file_write::FileWriteTool;
-pub use git::GitTool;
 pub use insert_symbol::{InsertAfterSymbolTool, InsertBeforeSymbolTool};
 pub use invoke_skill::InvokeSkillTool;
 pub use list_todos::ListTodosTool;

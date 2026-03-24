@@ -68,6 +68,22 @@ impl ApprovalRulesManager {
             action: RuleAction::RequireApproval,
             enabled: true,
             priority: 100,
+            created_at: Some(now.clone()),
+            modified_at: None,
+            compiled_regex: OnceLock::new(),
+        });
+        self.rules.push(ApprovalRule {
+            id: "default_danger_git_force_push".to_string(),
+            name: "Git force push to protected branches".to_string(),
+            description:
+                "Require approval for force push to main/master/develop/production/staging"
+                    .to_string(),
+            rule_type: RuleType::Danger,
+            pattern: r"git\s+push\s+.*--force.*\b(main|master|develop|production|staging)\b"
+                .to_string(),
+            action: RuleAction::RequireApproval,
+            enabled: true,
+            priority: 100,
             created_at: Some(now),
             modified_at: None,
             compiled_regex: OnceLock::new(),

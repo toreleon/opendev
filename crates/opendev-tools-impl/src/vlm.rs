@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
+use opendev_tools_core::{BaseTool, ToolContext, ToolDisplayMeta, ToolResult};
 
 use crate::path_utils::validate_path_access;
 
@@ -269,6 +269,15 @@ impl BaseTool for VlmTool {
         metadata.insert("provider".into(), serde_json::json!(provider));
 
         ToolResult::ok_with_metadata(content, metadata)
+    }
+
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
+        Some(ToolDisplayMeta {
+            verb: "Vision",
+            label: "image",
+            category: "Web",
+            primary_arg_keys: &["image_path", "image_url", "prompt"],
+        })
     }
 }
 

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
+use opendev_tools_core::{BaseTool, ToolContext, ToolDisplayMeta, ToolResult};
 
 /// Tool for managing plan execution todos.
 #[derive(Debug)]
@@ -127,6 +127,15 @@ impl BaseTool for TodoTool {
                 "Unknown action: {action}. Available: list, start, complete, add"
             )),
         }
+    }
+
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
+        Some(ToolDisplayMeta {
+            verb: "Todo",
+            label: "task",
+            category: "Plan",
+            primary_arg_keys: &["action", "id", "title"],
+        })
     }
 }
 

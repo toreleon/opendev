@@ -5,6 +5,9 @@
 
 use ratatui::style::Color;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use opendev_tools_core::ToolDisplayMeta;
 
 use super::style_tokens;
 
@@ -358,6 +361,87 @@ static TOOL_REGISTRY: &[ToolDisplayEntry] = &[
         primary_arg_keys: &["action", "session_id", "query"],
         result_format: ResultFormat::Generic,
     },
+    // Browser tool
+    ToolDisplayEntry {
+        names: &["browser"],
+        category: ToolCategory::Web,
+        verb: "Browse",
+        label: "page",
+        primary_arg_keys: &["action", "target"],
+        result_format: ResultFormat::Generic,
+    },
+    // Memory tool
+    ToolDisplayEntry {
+        names: &["memory"],
+        category: ToolCategory::Other,
+        verb: "Memory",
+        label: "memory",
+        primary_arg_keys: &["action", "file", "query"],
+        result_format: ResultFormat::Generic,
+    },
+    // Message tool
+    ToolDisplayEntry {
+        names: &["message"],
+        category: ToolCategory::Other,
+        verb: "Message",
+        label: "channel",
+        primary_arg_keys: &["channel", "message"],
+        result_format: ResultFormat::Generic,
+    },
+    // Diff preview tool
+    ToolDisplayEntry {
+        names: &["diff_preview"],
+        category: ToolCategory::FileWrite,
+        verb: "Diff",
+        label: "file",
+        primary_arg_keys: &["file_path"],
+        result_format: ResultFormat::File,
+    },
+    // Todo (legacy single-action) tool
+    ToolDisplayEntry {
+        names: &["todo"],
+        category: ToolCategory::Plan,
+        verb: "Todo",
+        label: "task",
+        primary_arg_keys: &["action", "id", "title"],
+        result_format: ResultFormat::Todo,
+    },
+    // Vision LM tool
+    ToolDisplayEntry {
+        names: &["vlm"],
+        category: ToolCategory::Web,
+        verb: "Vision",
+        label: "image",
+        primary_arg_keys: &["image_path", "image_url", "prompt"],
+        result_format: ResultFormat::Generic,
+    },
+    // LSP query tool
+    ToolDisplayEntry {
+        names: &["lsp_query"],
+        category: ToolCategory::Symbol,
+        verb: "LSP",
+        label: "query",
+        primary_arg_keys: &["action", "file_path"],
+        result_format: ResultFormat::Generic,
+    },
+    // Schedule tool
+    ToolDisplayEntry {
+        names: &["schedule"],
+        category: ToolCategory::Other,
+        verb: "Schedule",
+        label: "task",
+        primary_arg_keys: &["action", "description", "command"],
+        result_format: ResultFormat::Generic,
+    },
+    // Agents tool
+    ToolDisplayEntry {
+        names: &["agents"],
+        category: ToolCategory::Agent,
+        verb: "Agents",
+        label: "agents",
+        primary_arg_keys: &["action"],
+        result_format: ResultFormat::Generic,
+    },
 ];
 
 /// Default entry for unknown tools.
@@ -396,6 +480,50 @@ static MCP_ENTRY: ToolDisplayEntry = ToolDisplayEntry {
     result_format: ResultFormat::Generic,
 };
 
+/// Runtime display entries populated from tool `display_meta()` implementations.
+/// Provides a fallback for tools not in the static registry.
+static RUNTIME_DISPLAY: OnceLock<HashMap<String, ToolDisplayEntry>> = OnceLock::new();
+
+/// Initialize the runtime display map from tool metadata.
+///
+/// Call this once after tool registration. Only the first call takes effect.
+pub fn init_runtime_display(map: HashMap<String, ToolDisplayMeta>) {
+    let entries: HashMap<String, ToolDisplayEntry> = map
+        .into_iter()
+        .map(|(name, meta)| {
+            let entry = ToolDisplayEntry {
+                names: &[],
+                category: category_from_name(meta.category),
+                verb: meta.verb,
+                label: meta.label,
+                primary_arg_keys: meta.primary_arg_keys,
+                result_format: ResultFormat::Generic,
+            };
+            (name, entry)
+        })
+        .collect();
+    let _ = RUNTIME_DISPLAY.set(entries);
+}
+
+/// Map a category name string to a `ToolCategory` enum variant.
+fn category_from_name(name: &str) -> ToolCategory {
+    match name {
+        "FileRead" => ToolCategory::FileRead,
+        "FileWrite" => ToolCategory::FileWrite,
+        "Bash" => ToolCategory::Bash,
+        "Search" => ToolCategory::Search,
+        "Web" => ToolCategory::Web,
+        "Agent" => ToolCategory::Agent,
+        "Symbol" => ToolCategory::Symbol,
+        "Mcp" => ToolCategory::Mcp,
+        "Plan" => ToolCategory::Plan,
+        "Docker" => ToolCategory::Docker,
+        "UserInteraction" => ToolCategory::UserInteraction,
+        "Notebook" => ToolCategory::Notebook,
+        _ => ToolCategory::Other,
+    }
+}
+
 /// Docker fallback entry.
 static DOCKER_ENTRY: ToolDisplayEntry = ToolDisplayEntry {
     names: &[],
@@ -408,16 +536,27 @@ static DOCKER_ENTRY: ToolDisplayEntry = ToolDisplayEntry {
 
 /// Look up a tool's display metadata by name.
 ///
-/// Exact match first, then prefix fallback for `mcp__*` and `docker_*`.
-pub fn lookup_tool(name: &str) -> &'static ToolDisplayEntry {
-    // Exact match in registry
+/// Resolution order:
+/// 1. Static `TOOL_REGISTRY` exact match
+/// 2. Runtime display map (from tool `display_meta()`)
+/// 3. Prefix fallbacks (`mcp__*`, `docker_*`)
+/// 4. `DEFAULT_ENTRY`
+pub fn lookup_tool(name: &str) -> &ToolDisplayEntry {
+    // 1. Exact match in static registry
     for entry in TOOL_REGISTRY {
         if entry.names.contains(&name) {
             return entry;
         }
     }
 
-    // Prefix fallbacks
+    // 2. Runtime display map (from tool display_meta() implementations)
+    if let Some(rt) = RUNTIME_DISPLAY.get()
+        && let Some(entry) = rt.get(name)
+    {
+        return entry;
+    }
+
+    // 3. Prefix fallbacks
     if name.starts_with("mcp__") {
         return &MCP_ENTRY;
     }

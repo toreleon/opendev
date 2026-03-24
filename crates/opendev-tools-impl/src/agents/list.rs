@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
+use opendev_tools_core::{BaseTool, ToolContext, ToolDisplayMeta, ToolResult};
 
 /// Built-in subagent type definition.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -83,6 +83,15 @@ impl BaseTool for AgentsTool {
             "list" => self.list_agents(ctx),
             other => ToolResult::fail(format!("Unknown action: {other}. Available actions: list")),
         }
+    }
+
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
+        Some(ToolDisplayMeta {
+            verb: "Agents",
+            label: "agents",
+            category: "Agent",
+            primary_arg_keys: &["action"],
+        })
     }
 }
 

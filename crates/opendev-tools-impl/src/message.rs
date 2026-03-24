@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
+use opendev_tools_core::{BaseTool, ToolContext, ToolDisplayMeta, ToolResult};
 
 /// Tool for sending messages to configured channels.
 #[derive(Debug)]
@@ -130,6 +130,15 @@ impl BaseTool for MessageTool {
             }
             Err(e) => ToolResult::fail(format!("Failed to send message: {e}")),
         }
+    }
+
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
+        Some(ToolDisplayMeta {
+            verb: "Message",
+            label: "channel",
+            category: "Other",
+            primary_arg_keys: &["channel", "message"],
+        })
     }
 }
 

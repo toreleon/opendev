@@ -25,8 +25,6 @@ fn read_only_tools() -> HashSet<&'static str> {
         "get_session_history",
         "list_subagents",
         "memory_search",
-        // Git (read-only actions checked separately)
-        "git",
         // Meta (read-only)
         "list_todos",
         "search_tools",
@@ -34,11 +32,6 @@ fn read_only_tools() -> HashSet<&'static str> {
         // Agents listing
         "list_agents",
     ])
-}
-
-/// Git actions that are safe to parallelize.
-fn read_only_git_actions() -> HashSet<&'static str> {
-    HashSet::from(["status", "diff", "log", "branch"])
 }
 
 /// Tools that modify state and should generally run sequentially.
@@ -146,22 +139,7 @@ impl ParallelPolicy {
 
     /// Check if a tool call is read-only.
     fn is_read_only(tc: &ToolCall, ro_tools: &HashSet<&str>) -> bool {
-        if !ro_tools.contains(tc.name.as_str()) {
-            return false;
-        }
-
-        // Special case: git depends on action
-        if tc.name == "git" {
-            let ro_git = read_only_git_actions();
-            let action = tc
-                .arguments
-                .get("action")
-                .and_then(|a| a.as_str())
-                .unwrap_or("");
-            return ro_git.contains(action);
-        }
-
-        true
+        ro_tools.contains(tc.name.as_str())
     }
 
     /// Check if write operations target different files (safe to parallelize).
@@ -263,28 +241,6 @@ mod tests {
         ];
         let groups = ParallelPolicy::partition(&calls);
         // Same file -> sequential (separate groups)
-        assert_eq!(groups.len(), 2);
-    }
-
-    #[test]
-    fn test_git_read_only_action() {
-        let calls = vec![
-            tc("git", serde_json::json!({"action": "status"})),
-            tc("git", serde_json::json!({"action": "diff"})),
-        ];
-        let groups = ParallelPolicy::partition(&calls);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].len(), 2);
-    }
-
-    #[test]
-    fn test_git_write_action() {
-        let calls = vec![
-            tc("git", serde_json::json!({"action": "commit"})),
-            tc("read_file", serde_json::json!({})),
-        ];
-        let groups = ParallelPolicy::partition(&calls);
-        // read_file is read-only, git commit is "other" (not in write_tools)
         assert_eq!(groups.len(), 2);
     }
 

@@ -4,6 +4,11 @@
 mod helpers;
 mod patterns;
 
+/// Check if a command matches known dangerous patterns (e.g., `rm -rf /`, `git push --force`).
+pub fn is_dangerous_command(command: &str) -> bool {
+    patterns::is_dangerous(command)
+}
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

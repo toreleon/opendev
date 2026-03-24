@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
+use opendev_tools_core::{BaseTool, ToolContext, ToolDisplayMeta, ToolResult};
 
 /// Tool for generating diff previews.
 #[derive(Debug)]
@@ -117,6 +117,15 @@ impl BaseTool for DiffPreviewTool {
         metadata.insert("file_path".into(), serde_json::json!(file_path));
 
         ToolResult::ok_with_metadata(output, metadata)
+    }
+
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
+        Some(ToolDisplayMeta {
+            verb: "Diff",
+            label: "file",
+            category: "FileWrite",
+            primary_arg_keys: &["file_path"],
+        })
     }
 }
 

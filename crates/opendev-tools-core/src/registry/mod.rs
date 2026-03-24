@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::middleware::ToolMiddleware;
 use crate::sanitizer::ToolResultSanitizer;
-use crate::traits::{BaseTool, ToolResult, ToolTimeoutConfig};
+use crate::traits::{BaseTool, ToolDisplayMeta, ToolResult, ToolTimeoutConfig};
 
 /// Registry that maps tool names to implementations and dispatches execution.
 ///
@@ -178,6 +178,19 @@ impl ToolRegistry {
     /// Number of entries in the dedup cache.
     pub fn dedup_cache_size(&self) -> usize {
         self.dedup_cache.lock().map(|c| c.len()).unwrap_or(0)
+    }
+
+    /// Build a map of tool name → display metadata from all registered tools
+    /// that implement `display_meta()`.
+    pub fn build_display_map(&self) -> HashMap<String, ToolDisplayMeta> {
+        let tools = self.tools.read().expect("ToolRegistry lock poisoned");
+        let mut map = HashMap::new();
+        for (name, tool) in tools.iter() {
+            if let Some(meta) = tool.display_meta() {
+                map.insert(name.clone(), meta);
+            }
+        }
+        map
     }
 
     /// Get OpenAI-compatible function schemas for all registered tools.

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
+use opendev_tools_core::{BaseTool, ToolContext, ToolDisplayMeta, ToolResult};
 
 /// Tool for creating and listing scheduled tasks.
 #[derive(Debug)]
@@ -185,6 +185,15 @@ impl BaseTool for ScheduleTool {
                 "Unknown action: {action}. Available: create, list, remove, enable, disable"
             )),
         }
+    }
+
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
+        Some(ToolDisplayMeta {
+            verb: "Schedule",
+            label: "task",
+            category: "Other",
+            primary_arg_keys: &["action", "description", "command"],
+        })
     }
 }
 

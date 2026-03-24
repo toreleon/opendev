@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
+use opendev_tools_core::{BaseTool, ToolContext, ToolDisplayMeta, ToolResult};
 
 /// Tool for managing persistent memory files.
 #[derive(Debug)]
@@ -101,6 +101,15 @@ impl BaseTool for MemoryTool {
                 "Unknown action: {action}. Available: read, write, search, list"
             )),
         }
+    }
+
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
+        Some(ToolDisplayMeta {
+            verb: "Memory",
+            label: "memory",
+            category: "Other",
+            primary_arg_keys: &["action", "file", "query"],
+        })
     }
 }
 

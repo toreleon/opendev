@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use opendev_tools_core::{BaseTool, ToolContext, ToolResult};
+use opendev_tools_core::{BaseTool, ToolContext, ToolDisplayMeta, ToolResult};
 
 /// Maximum page body size to process (5 MB).
 const MAX_PAGE_SIZE: usize = 5 * 1024 * 1024;
@@ -116,6 +116,15 @@ impl BaseTool for BrowserTool {
                 AVAILABLE_ACTIONS.join(", ")
             )),
         }
+    }
+
+    fn display_meta(&self) -> Option<ToolDisplayMeta> {
+        Some(ToolDisplayMeta {
+            verb: "Browse",
+            label: "page",
+            category: "Web",
+            primary_arg_keys: &["action", "target"],
+        })
     }
 }
 
