@@ -122,8 +122,12 @@ pub enum ChannelAction {
     Remove,
     /// Show channel status and paired users.
     Status,
-    /// Run Telegram bot in foreground (without TUI).
-    Serve,
+    /// Run Telegram bot (background by default, --foreground to keep in terminal).
+    Serve {
+        /// Run in foreground instead of background.
+        #[arg(long, short)]
+        foreground: bool,
+    },
     /// Approve a Telegram user by ID.
     Pair {
         /// Telegram user ID to approve.

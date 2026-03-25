@@ -61,6 +61,16 @@ pub struct SendMessageRequest {
     pub reply_to_message_id: Option<i64>,
 }
 
+/// Request body for editMessageText.
+#[derive(Debug, Serialize)]
+pub struct EditMessageTextRequest {
+    pub chat_id: i64,
+    pub message_id: i64,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_mode: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

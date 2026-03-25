@@ -5,7 +5,7 @@ use std::time::Duration;
 use reqwest::Client;
 
 use super::error::TelegramError;
-use super::types::{Message, SendMessageRequest, TelegramResponse, Update, User};
+use super::types::{EditMessageTextRequest, Message, SendMessageRequest, TelegramResponse, Update, User};
 
 /// HTTP client for the Telegram Bot API.
 pub struct TelegramApi {
@@ -107,6 +107,33 @@ impl TelegramApi {
 
         if resp.ok {
             Ok(resp.result.unwrap_or(true))
+        } else {
+            Err(TelegramError::Api(
+                resp.description
+                    .unwrap_or_else(|| "unknown error".to_string()),
+            ))
+        }
+    }
+
+    /// Edit the text of an existing message.
+    pub async fn edit_message_text(
+        &self,
+        req: EditMessageTextRequest,
+    ) -> Result<Message, TelegramError> {
+        let url = format!("{}/editMessageText", self.base_url);
+        let resp: TelegramResponse<Message> = self
+            .client
+            .post(&url)
+            .json(&req)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if resp.ok {
+            resp.result.ok_or_else(|| {
+                TelegramError::Api("editMessageText returned ok but no result".to_string())
+            })
         } else {
             Err(TelegramError::Api(
                 resp.description

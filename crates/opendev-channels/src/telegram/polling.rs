@@ -9,8 +9,13 @@ use tokio::sync::{watch, RwLock};
 use tracing::{debug, error, info, warn};
 
 use super::api::TelegramApi;
-use super::types::{Message, SendMessageRequest};
+use super::types::{EditMessageTextRequest, Message, SendMessageRequest};
 use super::DmPolicy;
+
+/// Minimum characters before sending the first draft message (better push notification UX).
+const MIN_INITIAL_CHARS: usize = 30;
+/// Throttle interval between message edits in milliseconds.
+const THROTTLE_MS: u64 = 1000;
 
 /// Background poller that fetches Telegram updates and routes them to the agent.
 pub struct TelegramPoller {
@@ -159,7 +164,7 @@ impl TelegramPoller {
                     chat_id: msg.chat.id,
                     text: help_text.to_string(),
                     parse_mode: None,
-                    reply_to_message_id: Some(msg.message_id),
+                    reply_to_message_id: None,
                 })
                 .await;
             return;
@@ -171,7 +176,6 @@ impl TelegramPoller {
         }
 
         let chat_id = msg.chat.id;
-
         // Send typing indicator and keep it alive while processing
         let api_for_typing = Arc::clone(&self.api);
         let typing_cancel = tokio_util::sync::CancellationToken::new();
@@ -185,6 +189,17 @@ impl TelegramPoller {
                 }
             }
         });
+
+        // Create streaming channel
+        let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Spawn the draft stream editor task (OpenClaw-style progressive editing)
+        let api_for_draft = Arc::clone(&self.api);
+        let draft_handle = tokio::spawn(Self::run_draft_stream(
+            api_for_draft,
+            chat_id,
+            chunk_rx,
+        ));
 
         // Build metadata with chat_id for delivery context passthrough
         let mut metadata = HashMap::new();
@@ -204,17 +219,251 @@ impl TelegramPoller {
             timestamp: chrono::DateTime::from_timestamp(msg.date, 0)
                 .unwrap_or_else(chrono::Utc::now),
             chat_type: chat_type.to_string(),
-            reply_to_message_id: Some(msg.message_id.to_string()),
+            reply_to_message_id: None,
             metadata,
         };
 
         debug!("Telegram: routing message to agent (text={:?})", inbound.text);
-        if let Err(e) = self.router.handle_inbound(inbound).await {
-            error!("Telegram: failed to route message: {}", e);
-        }
+
+        // Execute with streaming — chunks flow to the draft stream task
+        let result = self
+            .router
+            .handle_inbound_streaming(inbound, chunk_tx)
+            .await;
+
+        // Wait for draft stream to finish flushing
+        let draft_message_id = draft_handle.await.unwrap_or(None);
 
         // Stop typing indicator
         typing_cancel.cancel();
+
+        // ── Final delivery ──
+        // Convert the final response to Telegram HTML and send/edit
+        match result {
+            Ok(final_text) => {
+                let trimmed = final_text.trim();
+                if trimmed.is_empty() {
+                    if let Some(mid) = draft_message_id {
+                        let _ = self
+                            .api
+                            .edit_message_text(EditMessageTextRequest {
+                                chat_id,
+                                message_id: mid,
+                                text: "Done.".to_string(),
+                                parse_mode: None,
+                            })
+                            .await;
+                    }
+                    return;
+                }
+
+                // Convert markdown to Telegram HTML
+                let html = super::format::markdown_to_telegram_html(trimmed);
+
+                // Split into chunks respecting HTML tag boundaries
+                let chunks = super::format::split_telegram_html(&html, 4000);
+
+                for (i, chunk) in chunks.iter().enumerate() {
+                    if i == 0 {
+                        if let Some(mid) = draft_message_id {
+                            // Edit the draft message with final HTML content
+                            let edit_result = self
+                                .api
+                                .edit_message_text(EditMessageTextRequest {
+                                    chat_id,
+                                    message_id: mid,
+                                    text: chunk.clone(),
+                                    parse_mode: Some("HTML".to_string()),
+                                })
+                                .await;
+
+                            // Fall back to plain text if HTML parsing fails
+                            if edit_result.is_err() {
+                                debug!("Telegram: HTML edit failed, falling back to plain text");
+                                let _ = self
+                                    .api
+                                    .edit_message_text(EditMessageTextRequest {
+                                        chat_id,
+                                        message_id: mid,
+                                        text: trimmed.to_string(),
+                                        parse_mode: None,
+                                    })
+                                    .await;
+                                return;
+                            }
+                        } else {
+                            // No draft was sent (very short response) — send fresh
+                            let send_result = self
+                                .api
+                                .send_message(SendMessageRequest {
+                                    chat_id,
+                                    text: chunk.clone(),
+                                    parse_mode: Some("HTML".to_string()),
+                                    reply_to_message_id: None,
+                                })
+                                .await;
+
+                            if send_result.is_err() {
+                                let _ = self
+                                    .api
+                                    .send_message(SendMessageRequest {
+                                        chat_id,
+                                        text: trimmed.to_string(),
+                                        parse_mode: None,
+                                        reply_to_message_id: None,
+                                    })
+                                    .await;
+                                return;
+                            }
+                        }
+                    } else {
+                        // Additional chunks — send as new messages
+                        let send_result = self
+                            .api
+                            .send_message(SendMessageRequest {
+                                chat_id,
+                                text: chunk.clone(),
+                                parse_mode: Some("HTML".to_string()),
+                                reply_to_message_id: None,
+                            })
+                            .await;
+
+                        if send_result.is_err() {
+                            // Fall back to plain text for this chunk
+                            let plain_chunk = strip_html_tags(chunk);
+                            let _ = self
+                                .api
+                                .send_message(SendMessageRequest {
+                                    chat_id,
+                                    text: plain_chunk,
+                                    parse_mode: None,
+                                    reply_to_message_id: None,
+                                })
+                                .await;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Telegram: agent execution failed: {}", e);
+                let error_text = format!("Error: {}", e);
+                if let Some(mid) = draft_message_id {
+                    let _ = self
+                        .api
+                        .edit_message_text(EditMessageTextRequest {
+                            chat_id,
+                            message_id: mid,
+                            text: error_text,
+                            parse_mode: None,
+                        })
+                        .await;
+                } else {
+                    let _ = self
+                        .api
+                        .send_message(SendMessageRequest {
+                            chat_id,
+                            text: error_text,
+                            parse_mode: None,
+                            reply_to_message_id: None,
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+
+    /// OpenClaw-style draft stream: progressively edits a Telegram message
+    /// as LLM tokens arrive. Waits for `MIN_INITIAL_CHARS` before sending the
+    /// first message, then throttles edits at `THROTTLE_MS` intervals.
+    ///
+    /// Returns the message_id of the draft (or None if nothing was sent).
+    async fn run_draft_stream(
+        api: Arc<TelegramApi>,
+        chat_id: i64,
+        mut chunk_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> Option<i64> {
+        let mut accumulated = String::new();
+        let mut draft_message_id: Option<i64> = None;
+        let mut last_edit = tokio::time::Instant::now();
+        let mut pending = false;
+
+        loop {
+            let chunk = tokio::time::timeout(
+                Duration::from_millis(THROTTLE_MS),
+                chunk_rx.recv(),
+            )
+            .await;
+
+            match chunk {
+                Ok(Some(text)) => {
+                    accumulated.push_str(&text);
+                    pending = true;
+                }
+                Ok(None) => break, // channel closed — done
+                Err(_) => {}       // timeout — flush below
+            }
+
+            if !pending || accumulated.trim().is_empty() {
+                continue;
+            }
+
+            let should_edit = last_edit.elapsed() >= Duration::from_millis(THROTTLE_MS);
+
+            if let Some(mid) = draft_message_id {
+                if should_edit {
+                    // Subsequent edits with cursor
+                    let display = format!("{}▍", accumulated.trim());
+                    let _ = api
+                        .edit_message_text(EditMessageTextRequest {
+                            chat_id,
+                            message_id: mid,
+                            text: display,
+                            parse_mode: None,
+                        })
+                        .await;
+                    last_edit = tokio::time::Instant::now();
+                    pending = false;
+                }
+            } else if accumulated.trim().len() >= MIN_INITIAL_CHARS {
+                // First send: wait until we have enough content
+                let display = format!("{}▍", accumulated.trim());
+                match api
+                    .send_message(SendMessageRequest {
+                        chat_id,
+                        text: display,
+                        parse_mode: None,
+                        reply_to_message_id: None,
+                    })
+                    .await
+                {
+                    Ok(m) => {
+                        draft_message_id = Some(m.message_id);
+                        last_edit = tokio::time::Instant::now();
+                        pending = false;
+                    }
+                    Err(e) => {
+                        error!("Telegram: failed to send draft: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Final flush — remove cursor, show accumulated text as-is
+        if let Some(mid) = draft_message_id
+            && pending
+            && !accumulated.trim().is_empty()
+        {
+            let _ = api
+                .edit_message_text(EditMessageTextRequest {
+                    chat_id,
+                    message_id: mid,
+                    text: accumulated.trim().to_string(),
+                    parse_mode: None,
+                })
+                .await;
+        }
+
+        draft_message_id
     }
 
     /// Send a pairing challenge to an unknown user.
@@ -249,8 +498,27 @@ impl TelegramPoller {
                 chat_id: msg.chat.id,
                 text: challenge_text,
                 parse_mode: Some("Markdown".to_string()),
-                reply_to_message_id: Some(msg.message_id),
+                reply_to_message_id: None,
             })
             .await;
     }
+}
+
+/// Strip HTML tags for plain-text fallback.
+fn strip_html_tags(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(ch),
+            _ => {}
+        }
+    }
+    // Unescape HTML entities
+    result
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
 }

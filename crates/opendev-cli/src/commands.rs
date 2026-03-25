@@ -470,38 +470,43 @@ pub async fn handle_channel(action: ChannelAction, working_dir: &std::path::Path
                 }
             }
         }
-        ChannelAction::Serve => {
-            let config = load_app_config(working_dir);
-            let tg = require_telegram(&config);
+        ChannelAction::Serve { foreground } => {
+            if foreground {
+                // Run in foreground — block until Ctrl+C
+                run_telegram_serve(working_dir).await;
+            } else {
+                // Run in background — spawn a detached child process
+                let exe = std::env::current_exe().expect("failed to get current executable path");
+                let mut cmd = std::process::Command::new(exe);
+                cmd.arg("channel").arg("serve").arg("--foreground");
 
-            let system_prompt = crate::runtime::build_system_prompt(working_dir, &config);
-            let router = std::sync::Arc::new(opendev_channels::MessageRouter::new());
-            let executor = std::sync::Arc::new(crate::runtime::ChannelAgentExecutor::new(
-                config.clone(),
-                working_dir,
-                system_prompt,
-            ));
-            router.set_executor(executor).await;
+                // Pass through the working directory
+                cmd.current_dir(working_dir);
 
-            let telegram_config = opendev_channels::telegram::TelegramConfig {
-                bot_token: tg.bot_token.clone(),
-                enabled: true,
-                group_mention_only: tg.group_mention_only,
-                dm_policy: to_channel_dm_policy(&tg.dm_policy),
-                allowed_users: tg.allowed_users.clone(),
-            };
+                // Detach from the terminal
+                cmd.stdin(std::process::Stdio::null());
+                cmd.stdout(std::process::Stdio::null());
+                cmd.stderr(std::process::Stdio::null());
 
-            match opendev_channels::telegram::start_telegram(Some(&telegram_config), router).await {
-                Ok((_adapter, _shutdown)) => {
-                    println!("Telegram bot running. Ctrl+C to stop.");
-                    tokio::signal::ctrl_c()
-                        .await
-                        .expect("failed to listen for Ctrl+C");
-                    println!("\nShutting down...");
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    std::process::exit(1);
+                // Write PID file so we can stop it later
+                let pid_path = opendev_config::Paths::default()
+                    .global_dir()
+                    .join("telegram-serve.pid");
+
+                match cmd.spawn() {
+                    Ok(child) => {
+                        let pid = child.id();
+                        if let Some(parent) = pid_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(&pid_path, pid.to_string());
+                        println!("Telegram bot running in background (PID: {pid}).");
+                        println!("Stop with: kill {pid}");
+                    }
+                    Err(e) => {
+                        eprintln!("Error spawning background process: {e}");
+                        std::process::exit(1);
+                    }
                 }
             }
         }
@@ -564,6 +569,43 @@ pub async fn handle_channel(action: ChannelAction, working_dir: &std::path::Path
                 eprintln!("Error: no channel configured.");
                 std::process::exit(1);
             }
+        }
+    }
+}
+
+/// Run the Telegram bot in foreground (blocking until Ctrl+C).
+async fn run_telegram_serve(working_dir: &std::path::Path) {
+    let config = load_app_config(working_dir);
+    let tg = require_telegram(&config);
+
+    let system_prompt = crate::runtime::build_system_prompt(working_dir, &config);
+    let router = std::sync::Arc::new(opendev_channels::MessageRouter::new());
+    let executor = std::sync::Arc::new(crate::runtime::ChannelAgentExecutor::new(
+        config.clone(),
+        working_dir,
+        system_prompt,
+    ));
+    router.set_executor(executor).await;
+
+    let telegram_config = opendev_channels::telegram::TelegramConfig {
+        bot_token: tg.bot_token.clone(),
+        enabled: true,
+        group_mention_only: tg.group_mention_only,
+        dm_policy: to_channel_dm_policy(&tg.dm_policy),
+        allowed_users: tg.allowed_users.clone(),
+    };
+
+    match opendev_channels::telegram::start_telegram(Some(&telegram_config), router).await {
+        Ok((_adapter, _shutdown)) => {
+            println!("Telegram bot running. Ctrl+C to stop.");
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for Ctrl+C");
+            println!("\nShutting down...");
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
         }
     }
 }

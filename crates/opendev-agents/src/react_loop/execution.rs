@@ -420,8 +420,17 @@ impl ReactLoop {
                     .as_deref()
                     .unwrap_or("HTTP request failed");
                 warn!(error = err_msg, "LLM HTTP call failed");
-                // Transient failure — continue loop (retry on next iteration)
+                // Transient failure — retry with exponential backoff
                 if http_result.retryable {
+                    consecutive_no_tool_calls += 1;
+                    let backoff_secs = std::cmp::min(2u64.pow(consecutive_no_tool_calls as u32), 30);
+                    warn!(backoff_secs, "Retryable LLM error, backing off");
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    if consecutive_no_tool_calls >= 5 {
+                        return Err(AgentError::LlmError(format!(
+                            "Too many consecutive LLM failures: {err_msg}"
+                        )));
+                    }
                     continue;
                 }
                 return Err(AgentError::LlmError(err_msg.to_string()));

@@ -6,6 +6,7 @@
 pub mod adapter;
 pub mod api;
 pub mod error;
+pub mod format;
 pub mod polling;
 pub mod types;
 
