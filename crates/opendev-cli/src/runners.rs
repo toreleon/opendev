@@ -396,6 +396,16 @@ pub async fn run_interactive(
                 bot_token: tg.bot_token.clone(),
                 enabled: true,
                 group_mention_only: tg.group_mention_only,
+                dm_policy: match tg.dm_policy {
+                    opendev_models::DmPolicy::Open => opendev_channels::telegram::DmPolicy::Open,
+                    opendev_models::DmPolicy::Pairing => {
+                        opendev_channels::telegram::DmPolicy::Pairing
+                    }
+                    opendev_models::DmPolicy::Allowlist => {
+                        opendev_channels::telegram::DmPolicy::Allowlist
+                    }
+                },
+                allowed_users: tg.allowed_users.clone(),
             };
             match opendev_channels::telegram::start_telegram(Some(&telegram_config), router).await {
                 Ok((_adapter, shutdown)) => {

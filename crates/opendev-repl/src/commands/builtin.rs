@@ -408,47 +408,34 @@ impl BuiltinCommands {
     }
 
     fn handle_channel(&self, args: &str) {
-        let parts: Vec<&str> = args.trim().splitn(3, ' ').collect();
+        let parts: Vec<&str> = args.trim().splitn(2, ' ').collect();
         let subcommand = parts.first().copied().unwrap_or("");
 
         match subcommand {
             "" | "status" => {
-                println!("Channel status:");
-                println!("  Use `opendev channel status` (CLI) to check live connections.");
-                println!("  Use `opendev channel list` to see configured channels.");
+                println!("Run `opendev channel status` to check connections.");
             }
-            "list" => {
-                println!("Configured channels:");
-                println!("  Run `opendev channel list` from the CLI for full details.");
-            }
-            "add" => {
-                let channel_args: Vec<&str> = parts.get(1..).unwrap_or(&[]).to_vec();
-                if channel_args.is_empty() {
-                    println!("Usage: /channel add <type> [token]");
-                    println!("  Supported types: telegram");
-                    println!("  Example: /channel add telegram 123456:ABC-DEF...");
+            "add" => println!("Run: opendev channel add [token]"),
+            "remove" => println!("Run: opendev channel remove"),
+            "serve" => println!("Run: opendev channel serve"),
+            "pair" => {
+                let user_id = parts.get(1).unwrap_or(&"");
+                if user_id.is_empty() {
+                    println!("Usage: /channel pair <user_id>");
                 } else {
-                    let channel_type = channel_args[0];
-                    match channel_type {
-                        "telegram" => {
-                            println!(
-                                "To add Telegram, run from the CLI: opendev channel add telegram"
-                            );
-                            println!("Or set TELEGRAM_BOT_TOKEN and restart.");
-                        }
-                        other => {
-                            println!("Unknown channel type: {other}");
-                            println!("Supported types: telegram");
-                        }
-                    }
+                    println!("Run: opendev channel pair {user_id}");
                 }
             }
-            "remove" => {
-                println!("To remove a channel, run: opendev channel remove <type>");
+            "unpair" => {
+                let user_id = parts.get(1).unwrap_or(&"");
+                if user_id.is_empty() {
+                    println!("Usage: /channel unpair <user_id>");
+                } else {
+                    println!("Run: opendev channel unpair {user_id}");
+                }
             }
             _ => {
-                println!("Unknown channel subcommand: {subcommand}");
-                println!("Usage: /channel [status|list|add|remove]");
+                println!("Usage: /channel [status|add|remove|serve|pair|unpair]");
             }
         }
     }

@@ -7,6 +7,15 @@ use opendev_mcp::config::load_config as load_mcp_config_file;
 use opendev_models::TelegramChannelConfig;
 use tracing::info;
 
+/// Convert model DmPolicy to channel DmPolicy.
+fn to_channel_dm_policy(p: &opendev_models::DmPolicy) -> opendev_channels::telegram::DmPolicy {
+    match p {
+        opendev_models::DmPolicy::Open => opendev_channels::telegram::DmPolicy::Open,
+        opendev_models::DmPolicy::Pairing => opendev_channels::telegram::DmPolicy::Pairing,
+        opendev_models::DmPolicy::Allowlist => opendev_channels::telegram::DmPolicy::Allowlist,
+    }
+}
+
 use crate::cli::*;
 use crate::helpers::*;
 
@@ -373,135 +382,209 @@ pub async fn handle_run(action: RunAction, working_dir: &std::path::Path) {
 /// Handle channel subcommands.
 pub async fn handle_channel(action: ChannelAction, working_dir: &std::path::Path) {
     match action {
-        ChannelAction::Add {
-            channel_type,
-            token,
-        } => {
-            match channel_type.as_str() {
-                "telegram" => {
-                    let bot_token = match token {
-                        Some(t) => t,
-                        None => {
-                            // Prompt interactively
-                            eprint!("Enter your Telegram bot token (from @BotFather): ");
-                            let mut input = String::new();
-                            std::io::stdin()
-                                .read_line(&mut input)
-                                .expect("failed to read input");
-                            let trimmed = input.trim().to_string();
-                            if trimmed.is_empty() {
-                                eprintln!("Error: no token provided.");
-                                std::process::exit(1);
-                            }
-                            trimmed
-                        }
-                    };
-
-                    // Validate the token by calling getMe
-                    eprint!("Validating...");
-                    let api = opendev_channels::telegram::api::TelegramApi::new(bot_token.clone());
-                    match api.get_me().await {
-                        Ok(user) => {
-                            let username = user.username.as_deref().unwrap_or("unknown");
-                            eprintln!(" Connected as @{}", username);
-                        }
-                        Err(e) => {
-                            eprintln!(" Failed: {e}");
-                            std::process::exit(1);
-                        }
-                    }
-
-                    // Load config, update channels, save
-                    let paths = opendev_config::Paths::default();
-                    let global_settings = paths.global_settings();
-                    let mut config = load_app_config(working_dir);
-                    config.channels.telegram = Some(TelegramChannelConfig {
-                        bot_token,
-                        enabled: true,
-                        group_mention_only: true,
-                    });
-
-                    if let Err(e) = opendev_config::ConfigLoader::save(&config, &global_settings) {
-                        eprintln!("Error: failed to save config: {e}");
+        ChannelAction::Add { token } => {
+            let bot_token = match token {
+                Some(t) => t,
+                None => {
+                    eprint!("Enter Telegram bot token (from @BotFather): ");
+                    let mut input = String::new();
+                    std::io::stdin()
+                        .read_line(&mut input)
+                        .expect("failed to read input");
+                    let trimmed = input.trim().to_string();
+                    if trimmed.is_empty() {
+                        eprintln!("Error: no token provided.");
                         std::process::exit(1);
                     }
-                    println!("Saved to {}", global_settings.display());
-                    println!("Telegram channel will auto-start on next launch.");
+                    trimmed
                 }
-                other => {
-                    eprintln!("Error: unknown channel type '{other}'.");
-                    eprintln!("Supported channels: telegram");
-                    std::process::exit(1);
-                }
-            }
-        }
-        ChannelAction::List => {
-            let config = load_app_config(working_dir);
-            println!("Configured channels:");
-            match &config.channels.telegram {
-                Some(tg) => {
-                    let status = if tg.enabled { "enabled" } else { "disabled" };
-                    let group = if tg.group_mention_only {
-                        "mention-only"
-                    } else {
-                        "all messages"
-                    };
-                    println!("  telegram  [{status}]  groups: {group}");
-                }
-                None => {
-                    println!("  (none)");
-                    println!("Add one with: opendev channel add telegram");
-                }
-            }
-        }
-        ChannelAction::Remove { channel_type } => match channel_type.as_str() {
-            "telegram" => {
-                let paths = opendev_config::Paths::default();
-                let global_settings = paths.global_settings();
-                let mut config = load_app_config(working_dir);
+            };
 
-                if config.channels.telegram.is_none() {
-                    eprintln!("Error: telegram channel is not configured.");
+            eprint!("Validating...");
+            let api = opendev_channels::telegram::api::TelegramApi::new(bot_token.clone());
+            match api.get_me().await {
+                Ok(user) => {
+                    eprintln!(" @{}", user.username.as_deref().unwrap_or("unknown"));
+                }
+                Err(e) => {
+                    eprintln!(" Failed: {e}");
                     std::process::exit(1);
                 }
-
-                config.channels.telegram = None;
-                if let Err(e) = opendev_config::ConfigLoader::save(&config, &global_settings) {
-                    eprintln!("Error: failed to save config: {e}");
-                    std::process::exit(1);
-                }
-                println!("Removed telegram channel.");
             }
-            other => {
-                eprintln!("Error: unknown channel type '{other}'.");
+
+            let paths = opendev_config::Paths::default();
+            let global_settings = paths.global_settings();
+            let mut config = load_app_config(working_dir);
+            config.channels.telegram = Some(TelegramChannelConfig {
+                bot_token,
+                enabled: true,
+                group_mention_only: true,
+                dm_policy: opendev_models::DmPolicy::Pairing,
+                allowed_users: Vec::new(),
+            });
+
+            save_config(&config, &global_settings);
+            println!("Saved. Bot will auto-start on next launch.");
+        }
+        ChannelAction::Remove => {
+            let paths = opendev_config::Paths::default();
+            let global_settings = paths.global_settings();
+            let mut config = load_app_config(working_dir);
+
+            if config.channels.telegram.is_none() {
+                eprintln!("Error: no channel configured.");
                 std::process::exit(1);
             }
-        },
+
+            config.channels.telegram = None;
+            save_config(&config, &global_settings);
+            println!("Removed telegram channel.");
+        }
         ChannelAction::Status => {
             let config = load_app_config(working_dir);
             match &config.channels.telegram {
-                Some(tg) => {
-                    if tg.enabled {
-                        // Try to validate the token
-                        let api =
-                            opendev_channels::telegram::api::TelegramApi::new(tg.bot_token.clone());
-                        match api.get_me().await {
-                            Ok(user) => {
-                                let username = user.username.as_deref().unwrap_or("unknown");
-                                println!("telegram: connected as @{username}");
-                            }
-                            Err(e) => {
-                                println!("telegram: configured but cannot connect ({e})");
-                            }
+                Some(tg) if tg.enabled => {
+                    let api =
+                        opendev_channels::telegram::api::TelegramApi::new(tg.bot_token.clone());
+                    match api.get_me().await {
+                        Ok(user) => {
+                            println!(
+                                "telegram  @{}  {:?}",
+                                user.username.as_deref().unwrap_or("unknown"),
+                                tg.dm_policy,
+                            );
                         }
+                        Err(e) => println!("telegram  cannot connect ({e})"),
+                    }
+                    if tg.allowed_users.is_empty() {
+                        println!("  no paired users");
                     } else {
-                        println!("telegram: disabled");
+                        for id in &tg.allowed_users {
+                            println!("  paired: {id}");
+                        }
                     }
                 }
+                Some(_) => println!("telegram  disabled"),
                 None => {
-                    println!("No channels configured.");
+                    println!("No channel configured. Run: opendev channel add");
                 }
             }
         }
+        ChannelAction::Serve => {
+            let config = load_app_config(working_dir);
+            let tg = require_telegram(&config);
+
+            let system_prompt = crate::runtime::build_system_prompt(working_dir, &config);
+            let router = std::sync::Arc::new(opendev_channels::MessageRouter::new());
+            let executor = std::sync::Arc::new(crate::runtime::ChannelAgentExecutor::new(
+                config.clone(),
+                working_dir,
+                system_prompt,
+            ));
+            router.set_executor(executor).await;
+
+            let telegram_config = opendev_channels::telegram::TelegramConfig {
+                bot_token: tg.bot_token.clone(),
+                enabled: true,
+                group_mention_only: tg.group_mention_only,
+                dm_policy: to_channel_dm_policy(&tg.dm_policy),
+                allowed_users: tg.allowed_users.clone(),
+            };
+
+            match opendev_channels::telegram::start_telegram(Some(&telegram_config), router).await {
+                Ok((_adapter, _shutdown)) => {
+                    println!("Telegram bot running. Ctrl+C to stop.");
+                    tokio::signal::ctrl_c()
+                        .await
+                        .expect("failed to listen for Ctrl+C");
+                    println!("\nShutting down...");
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        ChannelAction::Pair { user_id } => {
+            let paths = opendev_config::Paths::default();
+            let global_settings = paths.global_settings();
+            let mut config = load_app_config(working_dir);
+
+            {
+                let tg = config.channels.telegram.get_or_insert_with(|| TelegramChannelConfig {
+                    bot_token: String::new(),
+                    enabled: false,
+                    group_mention_only: true,
+                    dm_policy: opendev_models::DmPolicy::Pairing,
+                    allowed_users: Vec::new(),
+                });
+
+                if tg.allowed_users.contains(&user_id) {
+                    println!("User {user_id} is already paired.");
+                    return;
+                }
+                tg.allowed_users.push(user_id.clone());
+            }
+
+            let bot_token = config
+                .channels
+                .telegram
+                .as_ref()
+                .map(|t| t.bot_token.clone())
+                .unwrap_or_default();
+
+            save_config(&config, &global_settings);
+            println!("Paired {user_id}.");
+
+            // Notify user on Telegram
+            if !bot_token.is_empty()
+                && let Ok(chat_id) = user_id.parse::<i64>()
+            {
+                let api = opendev_channels::telegram::api::TelegramApi::new(bot_token);
+                let _ = api
+                    .send_message(opendev_channels::telegram::types::SendMessageRequest {
+                        chat_id,
+                        text: "Access approved. Send a message to start chatting.".to_string(),
+                        parse_mode: None,
+                        reply_to_message_id: None,
+                    })
+                    .await;
+            }
+        }
+        ChannelAction::Unpair { user_id } => {
+            let paths = opendev_config::Paths::default();
+            let global_settings = paths.global_settings();
+            let mut config = load_app_config(working_dir);
+
+            if let Some(ref mut tg) = config.channels.telegram {
+                tg.allowed_users.retain(|id| id != &user_id);
+                save_config(&config, &global_settings);
+                println!("Unpaired {user_id}.");
+            } else {
+                eprintln!("Error: no channel configured.");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn require_telegram(config: &opendev_models::AppConfig) -> TelegramChannelConfig {
+    match &config.channels.telegram {
+        Some(tg) if tg.enabled => tg.clone(),
+        Some(_) => {
+            eprintln!("Error: telegram channel is disabled.");
+            std::process::exit(1);
+        }
+        None => {
+            eprintln!("Error: no channel configured. Run: opendev channel add");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn save_config(config: &opendev_models::AppConfig, path: &std::path::Path) {
+    if let Err(e) = opendev_config::ConfigLoader::save(config, path) {
+        eprintln!("Error: failed to save config: {e}");
+        std::process::exit(1);
     }
 }

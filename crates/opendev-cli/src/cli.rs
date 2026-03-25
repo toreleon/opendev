@@ -113,22 +113,27 @@ pub enum Commands {
 /// Channel subcommands.
 #[derive(Subcommand, Debug)]
 pub enum ChannelAction {
-    /// Add a channel integration.
+    /// Add Telegram bot (prompts for token if not provided).
     Add {
-        /// Channel type (e.g., "telegram").
-        channel_type: String,
         /// Bot token (optional — will prompt interactively if not provided).
         token: Option<String>,
     },
-    /// List configured channels.
-    List,
-    /// Remove a channel integration.
-    Remove {
-        /// Channel type to remove (e.g., "telegram").
-        channel_type: String,
-    },
-    /// Show channel status.
+    /// Remove Telegram bot configuration.
+    Remove,
+    /// Show channel status and paired users.
     Status,
+    /// Run Telegram bot in foreground (without TUI).
+    Serve,
+    /// Approve a Telegram user by ID.
+    Pair {
+        /// Telegram user ID to approve.
+        user_id: String,
+    },
+    /// Revoke a Telegram user's access.
+    Unpair {
+        /// Telegram user ID to remove.
+        user_id: String,
+    },
 }
 
 /// Config subcommands.
