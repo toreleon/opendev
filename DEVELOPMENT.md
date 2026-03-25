@@ -155,6 +155,19 @@ opendev --version
 
 Use this flow when you want to test the public Homebrew installation from a clean state and avoid accidentally running the development binary.
 
+Exact command sequence:
+
+```bash
+rm -f ~/.local/bin/opendev
+hash -r
+brew uninstall opendev
+brew untap opendev-to/tap
+brew tap opendev-to/tap
+brew install opendev-to/tap/opendev
+which opendev
+opendev --version
+```
+
 ### 1. Remove the local development symlink
 
 ```bash
@@ -206,11 +219,15 @@ opendev --version
 
 After a Homebrew test, restore the local symlink if you want your shell to prefer the repo build again.
 
+Exact command sequence:
+
 ```bash
 ln -sf /Users/nghibui/codes/opendev/target/release/opendev ~/.local/bin/opendev
 hash -r
 which opendev
 ```
+
+That is required if you removed `~/.local/bin/opendev` for testing and want to use the local development binary again.
 
 ## Running The Repository Build/Test Workflow
 
