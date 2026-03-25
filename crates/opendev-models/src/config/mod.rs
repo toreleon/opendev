@@ -188,6 +188,22 @@ pub struct ChannelsConfig {
     pub telegram: Option<TelegramChannelConfig>,
 }
 
+/// DM access policy for a channel.
+///
+/// - `"open"` — anyone can message the bot (no access check).
+/// - `"pairing"` — unknown users get a pairing challenge; approved users are
+///   added to the allowlist.  *(default)*
+/// - `"allowlist"` — only pre-approved users may interact; others are silently
+///   ignored.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DmPolicy {
+    Open,
+    #[default]
+    Pairing,
+    Allowlist,
+}
+
 /// Telegram channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelegramChannelConfig {
@@ -199,6 +215,12 @@ pub struct TelegramChannelConfig {
     /// Only respond in groups when @mentioned or replied to.
     #[serde(default = "default_true")]
     pub group_mention_only: bool,
+    /// DM access policy: "open", "pairing", or "allowlist".
+    #[serde(default)]
+    pub dm_policy: DmPolicy,
+    /// Allowed Telegram user IDs (as strings).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_users: Vec<String>,
 }
 
 // ── AppConfig ──
