@@ -379,6 +379,39 @@ pub async fn run_interactive(
         });
     }
 
+    // Start Telegram channel if configured
+    let _telegram_shutdown = {
+        let tg_config = &config.channels.telegram;
+        if tg_config.as_ref().is_some_and(|tg| tg.enabled) {
+            let tg = tg_config.as_ref().unwrap();
+            let router = std::sync::Arc::new(opendev_channels::MessageRouter::new());
+            let executor = std::sync::Arc::new(runtime::ChannelAgentExecutor::new(
+                config.clone(),
+                working_dir,
+                system_prompt.clone(),
+            ));
+            router.set_executor(executor).await;
+
+            let telegram_config = opendev_channels::telegram::TelegramConfig {
+                bot_token: tg.bot_token.clone(),
+                enabled: true,
+                group_mention_only: tg.group_mention_only,
+            };
+            match opendev_channels::telegram::start_telegram(Some(&telegram_config), router).await {
+                Ok((_adapter, shutdown)) => {
+                    info!("Telegram bot started");
+                    Some(shutdown)
+                }
+                Err(e) => {
+                    tracing::warn!("Telegram channel not started: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
     // Create and run the TUI runner
     let tui_runner = crate::tui_runner::TuiRunner::new(agent_runtime, system_prompt)
         .with_initial_message(initial_message);

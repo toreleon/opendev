@@ -2249,6 +2249,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "opendev-models",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2261,11 +2262,13 @@ dependencies = [
 name = "opendev-cli"
 version = "0.1.1"
 dependencies = [
+ "async-trait",
  "chrono",
  "clap",
  "crossterm",
  "dirs-next",
  "opendev-agents",
+ "opendev-channels",
  "opendev-config",
  "opendev-context",
  "opendev-history",
