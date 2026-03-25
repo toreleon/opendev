@@ -43,7 +43,10 @@ impl ChannelAdapter for TelegramAdapter {
             .as_ref()
             .and_then(|id| id.parse::<i64>().ok());
 
-        let parse_mode = message.parse_mode.or(Some("MarkdownV2".to_string()));
+        // Only use parse_mode if explicitly set by the caller.
+        // Do NOT default to MarkdownV2 — LLM responses contain unescaped
+        // special characters that Telegram's strict parser rejects.
+        let parse_mode = message.parse_mode;
 
         let chunks = split_message(&message.text, TELEGRAM_MAX_MESSAGE_LEN);
 
