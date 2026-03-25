@@ -102,6 +102,33 @@ pub enum Commands {
         #[command(subcommand)]
         action: SessionAction,
     },
+
+    /// Manage channel integrations (Telegram, etc.).
+    Channel {
+        #[command(subcommand)]
+        action: ChannelAction,
+    },
+}
+
+/// Channel subcommands.
+#[derive(Subcommand, Debug)]
+pub enum ChannelAction {
+    /// Add a channel integration.
+    Add {
+        /// Channel type (e.g., "telegram").
+        channel_type: String,
+        /// Bot token (optional — will prompt interactively if not provided).
+        token: Option<String>,
+    },
+    /// List configured channels.
+    List,
+    /// Remove a channel integration.
+    Remove {
+        /// Channel type to remove (e.g., "telegram").
+        channel_type: String,
+    },
+    /// Show channel status.
+    Status,
 }
 
 /// Config subcommands.

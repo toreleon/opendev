@@ -59,6 +59,9 @@ async fn main() {
         Some(Commands::Session { action }) => {
             commands::handle_session(action, &working_dir);
         }
+        Some(Commands::Channel { action }) => {
+            commands::handle_channel(action, &working_dir).await;
+        }
         None => {
             // Replay mode
             if let Some(ref replay_path) = cli.replay {

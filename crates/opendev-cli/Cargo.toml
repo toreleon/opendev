@@ -24,7 +24,9 @@ opendev-agents = { workspace = true }
 opendev-runtime = { workspace = true }
 opendev-tui = { workspace = true }
 opendev-tools-impl = { workspace = true }
+opendev-channels = { workspace = true }
 
+async-trait = { workspace = true }
 crossterm = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
