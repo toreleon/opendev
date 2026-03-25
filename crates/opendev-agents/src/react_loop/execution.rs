@@ -3,7 +3,7 @@
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::subagents::spec::PermissionAction;
