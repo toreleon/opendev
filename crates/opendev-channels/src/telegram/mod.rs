@@ -13,19 +13,30 @@ pub use adapter::TelegramAdapter;
 pub use error::TelegramError;
 pub use polling::TelegramPoller;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::router::MessageRouter;
-use tokio::sync::watch;
+use tokio::sync::{watch, RwLock};
 use tracing::info;
 
 use api::TelegramApi;
+
+/// DM access policy (mirrors `opendev_models::DmPolicy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DmPolicy {
+    Open,
+    Pairing,
+    Allowlist,
+}
 
 /// Token configuration for the Telegram bot.
 pub struct TelegramConfig {
     pub bot_token: String,
     pub enabled: bool,
     pub group_mention_only: bool,
+    pub dm_policy: DmPolicy,
+    pub allowed_users: Vec<String>,
 }
 
 /// Resolve the bot token from config or environment.
@@ -53,6 +64,10 @@ pub async fn start_telegram(
 ) -> Result<(Arc<TelegramAdapter>, watch::Sender<bool>), TelegramError> {
     let token = resolve_token(config)?;
     let group_mention_only = config.map(|c| c.group_mention_only).unwrap_or(true);
+    let dm_policy = config.map(|c| c.dm_policy).unwrap_or(DmPolicy::Pairing);
+    let allowed_users: HashSet<String> = config
+        .map(|c| c.allowed_users.iter().cloned().collect())
+        .unwrap_or_default();
 
     let api = Arc::new(TelegramApi::new(token));
 
@@ -72,13 +87,15 @@ pub async fn start_telegram(
     router.register_adapter(adapter.clone()).await;
 
     // Start polling
-    let poller = TelegramPoller {
+    let poller = Arc::new(TelegramPoller {
         api,
         router,
         bot_username,
         bot_id,
         group_mention_only,
-    };
+        dm_policy,
+        allowed_users: Arc::new(RwLock::new(allowed_users)),
+    });
     let shutdown = poller.spawn();
 
     Ok((adapter, shutdown))
