@@ -81,6 +81,45 @@ All of these follow the same pattern -- export the env var and set the provider 
 - **OpenRouter** -- `OPENROUTER_API_KEY`, provider ID `openrouter`
 - **Azure OpenAI** -- `AZURE_OPENAI_API_KEY`, provider ID `azure`
 
+## Custom OpenAI-Compatible Endpoints
+
+OpenDev also supports custom OpenAI-compatible `chat/completions` endpoints through `api_base_url`.
+
+Use a custom provider name and point `api_base_url` at the provider's base compatibility URL. OpenDev will append `/chat/completions` automatically unless the URL already ends with it.
+
+Today, custom providers use `OPENAI_API_KEY` as the env-var fallback. That means you can map another provider token into `OPENAI_API_KEY` for the current shell.
+
+### Example: Cloudflare AI Gateway
+
+This configuration was validated against Cloudflare's OpenAI-compatible compatibility endpoint:
+
+```json
+{
+  "model_provider": "cloudflare",
+  "model": "openai/gpt-4o-mini",
+  "api_base_url": "https://gateway.ai.cloudflare.com/v1/def31e2cf1530789c604bdaa2abbfcf1/openai-proxy/compat"
+}
+```
+
+Run it with:
+
+```bash
+export OPENAI_API_KEY="$CF_AIG_TOKEN"
+opendev -p "What is Cloudflare? Reply in one sentence."
+```
+
+Effective request URL:
+
+```text
+https://gateway.ai.cloudflare.com/v1/def31e2cf1530789c604bdaa2abbfcf1/openai-proxy/compat/chat/completions
+```
+
+### Notes
+
+- Use a custom `model_provider` value such as `cloudflare` so OpenDev takes the generic OpenAI-compatible path.
+- For custom providers, `api_base_url` should be the compatibility base URL, not the full `/chat/completions` path unless you want to set it explicitly.
+- Environment variables now override stored `api_key` values from config, which makes shell-scoped testing of custom endpoints work correctly.
+
 ## Workflow Model Binding
 
 OpenDev is a compound AI system. Instead of one model doing everything, it has workflow slots, each independently bound to a model and provider:
