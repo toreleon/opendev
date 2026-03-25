@@ -89,6 +89,10 @@ impl BuiltinCommands {
                 self.handle_sound();
                 CommandOutcome::Handled
             }
+            "/channel" => {
+                self.handle_channel(args);
+                CommandOutcome::Handled
+            }
             _ => CommandOutcome::Unknown,
         }
     }
@@ -109,6 +113,7 @@ impl BuiltinCommands {
         println!("  /plugins <args>         Manage plugins");
         println!("  /session-models         Session model management");
         println!("  /sound                  Play test notification sound");
+        println!("  /channel <subcommand>   Manage channel integrations (telegram, etc.)");
         println!("  /init                   Initialize codebase context");
     }
 
@@ -400,6 +405,52 @@ impl BuiltinCommands {
     fn handle_sound(&self) {
         opendev_runtime::play_finish_sound();
         println!("Playing test sound...");
+    }
+
+    fn handle_channel(&self, args: &str) {
+        let parts: Vec<&str> = args.trim().splitn(3, ' ').collect();
+        let subcommand = parts.first().copied().unwrap_or("");
+
+        match subcommand {
+            "" | "status" => {
+                println!("Channel status:");
+                println!("  Use `opendev channel status` (CLI) to check live connections.");
+                println!("  Use `opendev channel list` to see configured channels.");
+            }
+            "list" => {
+                println!("Configured channels:");
+                println!("  Run `opendev channel list` from the CLI for full details.");
+            }
+            "add" => {
+                let channel_args: Vec<&str> = parts.get(1..).unwrap_or(&[]).to_vec();
+                if channel_args.is_empty() {
+                    println!("Usage: /channel add <type> [token]");
+                    println!("  Supported types: telegram");
+                    println!("  Example: /channel add telegram 123456:ABC-DEF...");
+                } else {
+                    let channel_type = channel_args[0];
+                    match channel_type {
+                        "telegram" => {
+                            println!(
+                                "To add Telegram, run from the CLI: opendev channel add telegram"
+                            );
+                            println!("Or set TELEGRAM_BOT_TOKEN and restart.");
+                        }
+                        other => {
+                            println!("Unknown channel type: {other}");
+                            println!("Supported types: telegram");
+                        }
+                    }
+                }
+            }
+            "remove" => {
+                println!("To remove a channel, run: opendev channel remove <type>");
+            }
+            _ => {
+                println!("Unknown channel subcommand: {subcommand}");
+                println!("Usage: /channel [status|list|add|remove]");
+            }
+        }
     }
 
     fn handle_init(&self, args: &str, state: &mut ReplState) {
