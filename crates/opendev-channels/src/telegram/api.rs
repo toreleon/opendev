@@ -85,6 +85,36 @@ impl TelegramApi {
         }
     }
 
+    /// Send a chat action (e.g., "typing") to indicate the bot is working.
+    pub async fn send_chat_action(
+        &self,
+        chat_id: i64,
+        action: &str,
+    ) -> Result<bool, TelegramError> {
+        let url = format!("{}/sendChatAction", self.base_url);
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "action": action,
+        });
+        let resp: TelegramResponse<bool> = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if resp.ok {
+            Ok(resp.result.unwrap_or(true))
+        } else {
+            Err(TelegramError::Api(
+                resp.description
+                    .unwrap_or_else(|| "unknown error".to_string()),
+            ))
+        }
+    }
+
     /// Get the bot token (for diagnostics/logging, not for display).
     pub fn token(&self) -> &str {
         &self.token
